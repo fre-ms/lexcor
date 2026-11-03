@@ -1,6 +1,6 @@
 """Semantic lexicon: what a term *is*, from bundled reference data.
 
-The protected vocabulary (:mod:`anonymed.erkennung.vokabular`) only says that a word must
+The protected vocabulary (:mod:`pseudonymed.erkennung.vokabular`) only says that a word must
 not be redacted by the guesswork.  The lexicon adds the class of a term and its role:
 
 * role ``fach`` - medical terms by class (Anatomie, Medikament, Erkrankung, Symptom,
@@ -12,8 +12,8 @@ The table ``lexikon`` lives in the pseudonym database next to ``vokabular``.  Bu
 are (re)loaded whenever their file changes (a hash per source in ``lexikon_meta``); rows of
 the source ``Nutzer`` are left alone, and bundled rows the user deleted stay deleted
 (``lexikon_geloescht``).  The ``merkmal`` rows are the identifiers of the identifiers step
-(:mod:`anonymed.erkennung.identifikatoren`), which redacts them by default; the ``fach``
-rows and the control step do not use the lexicon yet.  ``ANONYMED_LEXIKON=0`` switches the
+(:mod:`pseudonymed.erkennung.identifikatoren`), which redacts them by default; the ``fach``
+rows and the control step do not use the lexicon yet.  ``PSEUDONYMED_LEXIKON=0`` switches the
 loading off (the test suite does so, except in the lexicon tests).
 """
 
@@ -24,11 +24,12 @@ import datetime as dt
 import gzip
 import hashlib
 import json
-import os
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+from pseudonymed import umgebung
 
 DATEN = Path(__file__).resolve().parent.parent / "daten"
 FACH = "fach"
@@ -162,7 +163,7 @@ def _studien(pfad: Path) -> Iterator[Zeile]:
 
 
 def _eponyme() -> Iterator[Zeile]:
-    from anonymed.erkennung.ner import EPONYME
+    from pseudonymed.erkennung.ner import EPONYME
 
     for e in sorted(EPONYME):
         if len(e) >= 4:
@@ -197,7 +198,7 @@ def _stand(q: Quelle) -> str:
 
 
 def aktiv() -> bool:
-    return os.environ.get("ANONYMED_LEXIKON", "1") != "0"
+    return umgebung.variable("LEXIKON", "1") != "0"
 
 
 def sicherstellen(verbindung: sqlite3.Connection, erzwingen: bool = False,

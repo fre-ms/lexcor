@@ -7,11 +7,11 @@ heuristics (the deterministic rules for the patient's own identifiers are
 not affected, a patient really called "Herz" is still redacted).
 
 The terms live in the ``vokabular`` table of the pseudonym database
-(:mod:`anonymed.erkennung.vokabular`): the bundled lists (German labels and aliases
+(:mod:`pseudonymed.erkennung.vokabular`): the bundled lists (German labels and aliases
 from Wikidata for items with MeSH, ICD-10, ATC or INN identifiers, CC0; body parts;
-findings terms; the eponyms of :mod:`anonymed.erkennung.ner`) are loaded into it on
+findings terms; the eponyms of :mod:`pseudonymed.erkennung.ner`) are loaded into it on
 first use, and the user adds, deletes and imports terms there (vocabulary step,
-``anonymed fachbegriffe``).  :func:`laden` still reads the bundled files directly, as
+``pseudonymed fachbegriffe``).  :func:`laden` still reads the bundled files directly, as
 the fallback when the database cannot be opened.
 
 Matching is case-insensitive, tolerates German inflection (-s, -n, -en, -e,
@@ -23,14 +23,13 @@ from __future__ import annotations
 
 import csv
 import gzip
-import os
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from platformdirs import user_data_path
+from pseudonymed import umgebung
 
 BASIS = Path(__file__).resolve().parent.parent / "daten" / "fachbegriffe_de.txt.gz"
 KOERPERTEILE = Path(__file__).resolve().parent.parent / "daten" / "koerperteile_de.txt"
@@ -54,9 +53,7 @@ _EPONYM_KOEPFE = {
 
 
 def datenordner() -> Path:
-    ordner = os.environ.get("ANONYMED_DATENORDNER")
-    basis = Path(ordner) if ordner else user_data_path("AnonyMed", appauthor=False)
-    return basis / "fachbegriffe"
+    return umgebung.datenordner() / "fachbegriffe"
 
 
 def _norm(wort: str) -> str:
@@ -184,7 +181,7 @@ def _lies_liste(pfad: Path) -> Iterator[str]:
 
 def laden(zusatz: Iterable[Path] = (), mit_basis: bool = True,
           mit_nutzerdaten: bool = True) -> Fachbegriffe:
-    from anonymed.erkennung.ner import EPONYME
+    from pseudonymed.erkennung.ner import EPONYME
 
     fb = Fachbegriffe()
     if mit_basis and BASIS.exists():
@@ -212,7 +209,7 @@ def standard() -> Fachbegriffe:
     global _cache
     import sqlite3
 
-    from anonymed.erkennung import vokabular as vokmodul
+    from pseudonymed.erkennung import vokabular as vokmodul
 
     try:
         pfad = vokmodul.standardpfad()
@@ -264,7 +261,7 @@ def ergaenze(pfad: Path, name: str = NUTZERLISTE) -> tuple[Path, int]:
     the category ``name`` ("nutzervokabular" = Nutzervokabular); returns the database
     and how many were new.  This is what the exported ``.vokabular.txt`` files are for:
     the vocabulary grows with every review."""
-    from anonymed.erkennung import vokabular as vokmodul
+    from pseudonymed.erkennung import vokabular as vokmodul
 
     kategorie = vokmodul.KATEGORIE_NUTZER if name == NUTZERLISTE else name
     with vokmodul.Vokabular() as v:
@@ -286,7 +283,7 @@ def importiere(pfad: Path, name: str, format_: str = "liste", spalte: int = 0,
         begriffe = _lies_liste(pfad)
     else:
         raise ValueError(f"Unbekanntes Format: {format_!r} (liste, csv, mesh-xml)")
-    from anonymed.erkennung import vokabular as vokmodul
+    from pseudonymed.erkennung import vokabular as vokmodul
 
     with vokmodul.Vokabular() as v:
         neu = v.fuege_hinzu(begriffe, name)

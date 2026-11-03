@@ -5,7 +5,7 @@ Every term the guesswork (NER, fuzzy search) must leave alone lives in the table
 into it (Wikidata medicine, body parts, findings terms, eponyms) and lists from the old
 ``fachbegriffe/`` folder are taken over once; from then on the table is the truth: the
 vocabulary step shows, sorts, edits, adds and deletes rows and exchanges CSV.  A
-version counter in ``vokabular_meta`` tells :func:`anonymed.erkennung.fachbegriffe.standard`
+version counter in ``vokabular_meta`` tells :func:`pseudonymed.erkennung.fachbegriffe.standard`
 when to rebuild its matcher.
 """
 
@@ -20,7 +20,7 @@ import sqlite3
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from platformdirs import user_data_path
+from pseudonymed import umgebung
 
 DATEN = Path(__file__).resolve().parent.parent / "daten"
 KATEGORIE_MEDIZIN = "Medizin (Wikidata)"
@@ -49,16 +49,14 @@ MIN_LAENGE = 3
 
 
 def standardpfad() -> Path:
-    from anonymed.pseudonyme.speicher import standardpfad as _pfad
+    from pseudonymed.pseudonyme.speicher import standardpfad as _pfad
 
     return _pfad()
 
 
 def legacy_ordner() -> Path:
     """The folder of the former per-file user lists (taken over once)."""
-    ordner = os.environ.get("ANONYMED_DATENORDNER")
-    basis = Path(ordner) if ordner else user_data_path("AnonyMed", appauthor=False)
-    return basis / "fachbegriffe"
+    return umgebung.datenordner() / "fachbegriffe"
 
 
 def _zeilen(pfad: Path) -> Iterator[str]:
@@ -89,7 +87,7 @@ class Vokabular:
         self.pfad = Path(pfad) if pfad else standardpfad()
         self.pfad.parent.mkdir(parents=True, exist_ok=True)
         self.verbindung = sqlite3.connect(str(self.pfad), check_same_thread=False)
-        from anonymed.pseudonyme.speicher import _SCHEMA  # the whole store, not only our tables
+        from pseudonymed.pseudonyme.speicher import _SCHEMA  # the whole store, not only our tables
 
         self.verbindung.executescript(_SCHEMA)
         self.verbindung.executescript(SCHEMA)
@@ -100,7 +98,7 @@ class Vokabular:
         if grundbestand and self.anzahl() == 0:
             self.grundbestand()
         if grundbestand:
-            from anonymed.erkennung import lexikon  # classes and the identifiers step
+            from pseudonymed.erkennung import lexikon  # classes and the identifiers step
 
             lexikon.sicherstellen(self.verbindung)
 
@@ -222,7 +220,7 @@ class Vokabular:
         """Read a CSV (``begriff[,kategorie]``, header optional, comma, semicolon or tab) or a
         plain list (one term per line); returns (new, read).  A category column in the
         file wins over ``kategorie``."""
-        from anonymed.dokument.textdatei import lese_textdatei
+        from pseudonymed.dokument.textdatei import lese_textdatei
 
         text = lese_textdatei(pfad)
         zeilen = [z for z in text.splitlines() if z.strip() and not z.lstrip().startswith("#")]
@@ -255,7 +253,7 @@ class Vokabular:
     # -- bundled lists ---------------------------------------------------------------------------
     def grundbestand(self) -> dict[str, int]:
         """Load the bundled lists and the eponyms, take over lists of the old folder once."""
-        from anonymed.erkennung.ner import EPONYME
+        from pseudonymed.erkennung.ner import EPONYME
 
         zaehlung: dict[str, int] = {}
         for pfad, kategorie in GRUNDBESTAND:
