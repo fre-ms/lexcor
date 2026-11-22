@@ -1,11 +1,11 @@
 """The protected vocabulary as a table of the pseudonym database.
 
 Every term the guesswork (NER, fuzzy search) must leave alone lives in the table
-``vokabular`` (term, category, when added).  On first use the bundled lists are loaded
+``vocabulary`` (term, category, when added).  On first use the bundled lists are loaded
 into it (Wikidata medicine, body parts, findings terms, eponyms) and lists from the old
 ``fachbegriffe/`` folder are taken over once; from then on the table is the truth: the
 vocabulary step shows, sorts, edits, adds and deletes rows and exchanges CSV.  A
-version counter in ``vokabular_meta`` tells :func:`pseudonymed.erkennung.fachbegriffe.standard`
+version counter in ``vokabular_meta`` tells :func:`pseudonymed.detection.medical_terms.standard`
 when to rebuild its matcher.
 """
 
@@ -19,19 +19,19 @@ import sqlite3
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from pseudonymed import umgebung
-from pseudonymed.erkennung import listenimport
+from pseudonymed import environment
+from pseudonymed.detection import list_import
 
-DATEN = Path(__file__).resolve().parent.parent / "daten"
-KATEGORIE_MEDIZIN = "Medizin (Wikidata)"
-KATEGORIE_KOERPER = "Körperteile"
-KATEGORIE_BEFUND = "Befundbegriffe"
-KATEGORIE_EPONYME = "Eponyme"
-KATEGORIE_NUTZER = "Nutzervokabular"
-GRUNDBESTAND = (
-    (DATEN / "fachbegriffe_de.txt.gz", KATEGORIE_MEDIZIN),
-    (DATEN / "koerperteile_de.txt", KATEGORIE_KOERPER),
-    (DATEN / "befundbegriffe_de.txt", KATEGORIE_BEFUND),
+DATA = Path(__file__).resolve().parent.parent / "data"
+CATEGORY_MEDICINE = "Medizin (Wikidata)"
+CATEGORY_BODY_PARTS = "Körperteile"
+CATEGORY_FINDINGS = "Befundbegriffe"
+CATEGORY_EPONYMS = "Eponyme"
+CATEGORY_USER = "Nutzervokabular"
+SEED_LISTS = (
+    (DATA / "fachbegriffe_de.txt.gz", CATEGORY_MEDICINE),
+    (DATA / "koerperteile_de.txt", CATEGORY_BODY_PARTS),
+    (DATA / "befundbegriffe_de.txt", CATEGORY_FINDINGS),
 )
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS vokabular (
@@ -45,95 +45,95 @@ CREATE TABLE IF NOT EXISTS vokabular_meta (
     wert       TEXT NOT NULL
 );
 """
-MIN_LAENGE = 3
+MIN_LENGTH = 3
 
 
-def standardpfad() -> Path:
+def default_path() -> Path:
     """The pseudonym database that holds the table (the store decides where it lives)."""
-    from pseudonymed.pseudonyme.speicher import standardpfad as _pfad
+    from pseudonymed.pseudonyms.store import default_path as _path
 
-    return _pfad()
+    return _path()
 
 
-def legacy_ordner() -> Path:
+def legacy_folder() -> Path:
     """The folder of the former per-file user lists (taken over once)."""
-    return umgebung.datenordner() / "fachbegriffe"
+    return environment.data_folder() / "fachbegriffe"
 
 
-def _zeilen(pfad: Path) -> Iterator[str]:
+def _rows(path: Path) -> Iterator[str]:
     """The non-empty, non-comment lines of a plain or gzipped list, stripped."""
-    oeffnen = gzip.open if pfad.suffix == ".gz" else open
-    with oeffnen(pfad, "rt", encoding="utf-8", errors="replace") as f:
-        for zeile in f:
-            zeile = zeile.strip()
-            if zeile and not zeile.startswith("#"):
-                yield zeile
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                yield line
 
 
-def _sauber(begriffe: Iterable[str]) -> list[str]:
+def _clean(terms: Iterable[str]) -> list[str]:
     """Terms with their spaces collapsed, long enough, no comments, first spelling of
     each (case-insensitively), in the given order."""
-    aus: list[str] = []
-    gesehen: set[str] = set()
-    for b in begriffe:
+    out: list[str] = []
+    seen: set[str] = set()
+    for b in terms:
         b = " ".join(str(b).split())
-        if len(b) < MIN_LAENGE or b.startswith("#") or b.casefold() in gesehen:
+        if len(b) < MIN_LENGTH or b.startswith("#") or b.casefold() in seen:
             continue
-        gesehen.add(b.casefold())
-        aus.append(b)
-    return aus
+        seen.add(b.casefold())
+        out.append(b)
+    return out
 
 
-def _legacy_dateien() -> list[Path]:
+def _legacy_files() -> list[Path]:
     """The list files of the former per-file folder in name order; none without it."""
-    ordner = legacy_ordner()
-    if not ordner.is_dir():
+    folder = legacy_folder()
+    if not folder.is_dir():
         return []
-    return [d for d in sorted(ordner.iterdir()) if d.is_file() and d.suffix in (".txt", ".gz")]
+    return [d for d in sorted(folder.iterdir()) if d.is_file() and d.suffix in (".txt", ".gz")]
 
 
-def _legacy_kategorie(datei: Path) -> str:
+def _legacy_category(file: Path) -> str:
     """The category a former list file goes to: the user's for ``nutzervokabular*``,
     else the file's stem."""
-    return KATEGORIE_NUTZER if datei.stem.lower().startswith("nutzervokabular") else datei.stem
+    return CATEGORY_USER if file.stem.lower().startswith("nutzervokabular") else file.stem
 
 
-def _markiere_uebernommen(datei: Path) -> None:
+def _mark_adopted(file: Path) -> None:
     """Rename a taken-over list to ``*.uebernommen`` so that it is not read twice; a file
     that cannot be renamed stays (its terms are in the table already)."""
     try:
-        datei.rename(datei.with_name(datei.name + ".uebernommen"))
+        file.rename(file.with_name(file.name + ".uebernommen"))
     except OSError:
         pass
 
 
-class Vokabular:
+class Vocabulary:
     """Reads and writes the vocabulary table of the pseudonym database."""
 
-    def __init__(self, pfad: str | Path | None = None, grundbestand: bool = True) -> None:
-        self.pfad = Path(pfad) if pfad else standardpfad()
-        self.pfad.parent.mkdir(parents=True, exist_ok=True)
-        self.verbindung = sqlite3.connect(str(self.pfad), check_same_thread=False)
-        from pseudonymed.pseudonyme.speicher import _SCHEMA  # the whole store, not only our tables
+    def __init__(self, path: str | Path | None = None, seed: bool = True) -> None:
+        self.path = Path(path) if path else default_path()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = sqlite3.connect(str(self.path), check_same_thread=False)
+        from pseudonymed.pseudonyms.store import _SCHEMA  # the whole store, not only our tables
 
-        self.verbindung.executescript(_SCHEMA)
-        self.verbindung.executescript(SCHEMA)
+        self.connection.executescript(_SCHEMA)
+        self.connection.executescript(SCHEMA)
         try:
-            os.chmod(self.pfad, 0o600)
+            os.chmod(self.path, 0o600)
         except OSError:
             pass
-        if grundbestand and self.anzahl() == 0:
-            self.grundbestand()
-        if grundbestand:
-            from pseudonymed.erkennung import lexikon  # classes and the identifiers step
+        if seed and self.count() == 0:
+            self.seed()
+        if seed:
+            from pseudonymed.detection import lexicon  # classes and the identifiers step
 
-            lexikon.sicherstellen(self.verbindung)
+            lexicon.ensure(self.connection)
 
     def close(self) -> None:
         """Close the database connection."""
-        self.verbindung.close()
+        self.connection.close()
 
-    def __enter__(self) -> Vokabular:
+    def __enter__(self) -> Vocabulary:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -142,146 +142,145 @@ class Vokabular:
     # -- reading -----------------------------------------------------------------------------------
     def version(self) -> int:
         """Counter that every change raises; the matcher rebuilds when it moved."""
-        r = self.verbindung.execute(
+        r = self.connection.execute(
             "SELECT wert FROM vokabular_meta WHERE schluessel = 'version'").fetchone()
         return int(r[0]) if r else 0
 
-    def anzahl(self) -> int:
+    def count(self) -> int:
         """How many terms the table holds."""
-        return int(self.verbindung.execute("SELECT COUNT(*) FROM vokabular").fetchone()[0])
+        return int(self.connection.execute("SELECT COUNT(*) FROM vokabular").fetchone()[0])
 
-    def kategorien(self) -> list[tuple[str, int]]:
+    def categories(self) -> list[tuple[str, int]]:
         """Every category with its number of terms, the largest first."""
-        return [(k, n) for k, n in self.verbindung.execute(
+        return [(k, n) for k, n in self.connection.execute(
             "SELECT kategorie, COUNT(*) FROM vokabular GROUP BY kategorie"
             " ORDER BY COUNT(*) DESC, kategorie")]
 
-    def alle(self, suche: str = "", kategorie: str = "") -> list[tuple[str, str, str]]:
+    def all_items(self, search: str = "", category: str = "") -> list[tuple[str, str, str]]:
         """Rows (term, category, added) in alphabetical order, narrowed to terms that
-        contain ``suche`` and to one category when given."""
-        sql, werte = "SELECT begriff, kategorie, angelegt FROM vokabular", []
-        bedingungen = []
-        if suche:
-            bedingungen.append("begriff LIKE ? ESCAPE '\\'")
-            werte.append("%" + suche.replace("\\", "\\\\").replace("%", "\\%")
-                         .replace("_", "\\_") + "%")
-        if kategorie:
-            bedingungen.append("kategorie = ?")
-            werte.append(kategorie)
-        if bedingungen:
-            sql += " WHERE " + " AND ".join(bedingungen)
+        contain ``search`` and to one category when given."""
+        sql, values = "SELECT begriff, kategorie, angelegt FROM vokabular", []
+        conditions = []
+        if search:
+            conditions.append("begriff LIKE ? ESCAPE '\\'")
+            values.append("%" + search.replace("\\", "\\\\").replace("%", "\\%")
+                          .replace("_", "\\_") + "%")
+        if category:
+            conditions.append("kategorie = ?")
+            values.append(category)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY begriff COLLATE NOCASE"
-        return [tuple(r) for r in self.verbindung.execute(sql, werte)]
+        return [tuple(r) for r in self.connection.execute(sql, values)]
 
-    def je_kategorie(self) -> dict[str, list[str]]:
+    def per_category(self) -> dict[str, list[str]]:
         """Terms grouped by category, bundled categories first (for the matcher's sources)."""
-        gruppen: dict[str, list[str]] = {}
-        for begriff, kategorie in self.verbindung.execute(
+        groups: dict[str, list[str]] = {}
+        for term, category in self.connection.execute(
                 "SELECT begriff, kategorie FROM vokabular"):
-            gruppen.setdefault(kategorie, []).append(begriff)
-        reihenfolge = [k for _p, k in GRUNDBESTAND] + [KATEGORIE_EPONYME, KATEGORIE_NUTZER]
-        return {k: gruppen[k] for k in reihenfolge if k in gruppen} | {
-            k: v for k, v in sorted(gruppen.items()) if k not in reihenfolge}
+            groups.setdefault(category, []).append(term)
+        order = [k for _p, k in SEED_LISTS] + [CATEGORY_EPONYMS, CATEGORY_USER]
+        return {k: groups[k] for k in order if k in groups} | {
+            k: v for k, v in sorted(groups.items()) if k not in order}
 
-    def enthaelt(self, begriff: str) -> bool:
+    def contains(self, term: str) -> bool:
         """Whether the term is in the table (case-insensitively)."""
-        return self.verbindung.execute("SELECT 1 FROM vokabular WHERE begriff = ?",
-                                       (begriff.strip(),)).fetchone() is not None
+        return self.connection.execute("SELECT 1 FROM vokabular WHERE begriff = ?",
+                                       (term.strip(),)).fetchone() is not None
 
     # -- writing -----------------------------------------------------------------------------------
     def _bump(self) -> None:
-        self.verbindung.execute(
+        self.connection.execute(
             "INSERT INTO vokabular_meta (schluessel, wert) VALUES ('version', '1')"
             " ON CONFLICT(schluessel) DO UPDATE SET wert = CAST(CAST(wert AS INTEGER) + 1 AS TEXT)")
 
-    def fuege_hinzu(self, begriffe: Iterable[str], kategorie: str = KATEGORIE_NUTZER) -> int:
+    def add(self, terms: Iterable[str], category: str = CATEGORY_USER) -> int:
         """Insert what is new (case-insensitively); returns how many were new."""
-        saubere = _sauber(begriffe)
-        if not saubere:
+        cleaned = _clean(terms)
+        if not cleaned:
             return 0
-        jetzt = dt.datetime.now().isoformat(timespec="seconds")
-        vorher = self.verbindung.total_changes
-        self.verbindung.executemany(
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        before = self.connection.total_changes
+        self.connection.executemany(
             "INSERT OR IGNORE INTO vokabular (begriff, kategorie, angelegt) VALUES (?, ?, ?)",
-            [(b, kategorie.strip() or KATEGORIE_NUTZER, jetzt) for b in saubere])
-        neu = self.verbindung.total_changes - vorher
-        if neu:
+            [(b, category.strip() or CATEGORY_USER, now) for b in cleaned])
+        new = self.connection.total_changes - before
+        if new:
             self._bump()
-        self.verbindung.commit()
-        return neu
+        self.connection.commit()
+        return new
 
-    def entferne(self, begriffe: Iterable[str]) -> int:
+    def remove(self, terms: Iterable[str]) -> int:
         """Delete the given terms; returns how many rows went."""
-        vorher = self.verbindung.total_changes
-        self.verbindung.executemany("DELETE FROM vokabular WHERE begriff = ?",
-                                    [(b.strip(),) for b in begriffe if b.strip()])
-        n = self.verbindung.total_changes - vorher
+        before = self.connection.total_changes
+        self.connection.executemany("DELETE FROM vokabular WHERE begriff = ?",
+                                    [(b.strip(),) for b in terms if b.strip()])
+        n = self.connection.total_changes - before
         if n:
             self._bump()
-        self.verbindung.commit()
+        self.connection.commit()
         return n
 
-    def benenne_um(self, alt: str, neu: str) -> bool:
+    def rename(self, old: str, new: str) -> bool:
         """Rename one term; False when the new spelling is too short or taken by another
         term (a change of case only is allowed)."""
-        neu = " ".join(neu.split())
-        if len(neu) < MIN_LAENGE or (neu.casefold() != alt.casefold() and self.enthaelt(neu)):
+        new = " ".join(new.split())
+        if len(new) < MIN_LENGTH or (new.casefold() != old.casefold() and self.contains(new)):
             return False
-        self.verbindung.execute("UPDATE vokabular SET begriff = ? WHERE begriff = ?", (neu, alt))
+        self.connection.execute("UPDATE vokabular SET begriff = ? WHERE begriff = ?", (new, old))
         self._bump()
-        self.verbindung.commit()
+        self.connection.commit()
         return True
 
-    def setze_kategorie(self, begriffe: Iterable[str], kategorie: str) -> int:
+    def set_category(self, terms: Iterable[str], category: str) -> int:
         """Move the given terms to a category (the user's when empty); returns how many
         rows changed."""
-        kategorie = kategorie.strip() or KATEGORIE_NUTZER
-        vorher = self.verbindung.total_changes
-        self.verbindung.executemany("UPDATE vokabular SET kategorie = ? WHERE begriff = ?",
-                                    [(kategorie, b) for b in begriffe])
-        n = self.verbindung.total_changes - vorher
+        category = category.strip() or CATEGORY_USER
+        before = self.connection.total_changes
+        self.connection.executemany("UPDATE vokabular SET kategorie = ? WHERE begriff = ?",
+                                    [(category, b) for b in terms])
+        n = self.connection.total_changes - before
         if n:
             self._bump()
-        self.verbindung.commit()
+        self.connection.commit()
         return n
 
     # -- CSV ---------------------------------------------------------------------------------------
-    def exportiere_csv(self, pfad: Path, kategorie: str = "") -> int:
+    def export_csv(self, path: Path, category: str = "") -> int:
         """Write ``begriff,kategorie`` rows (comma, UTF-8, header line)."""
-        zeilen = self.alle(kategorie=kategorie)
-        with Path(pfad).open("w", encoding="utf-8", newline="") as f:
+        lines = self.all_items(category=category)
+        with Path(path).open("w", encoding="utf-8", newline="") as f:
             w = csv.writer(f, lineterminator="\n")
             w.writerow(["begriff", "kategorie"])
-            w.writerows((b, k) for b, k, _a in zeilen)
-        return len(zeilen)
+            w.writerows((b, k) for b, k, _a in lines)
+        return len(lines)
 
-    def importiere_csv(self, pfad: Path, kategorie: str = KATEGORIE_NUTZER) -> tuple[int, int]:
+    def import_csv(self, path: Path, category: str = CATEGORY_USER) -> tuple[int, int]:
         """Read a CSV (``begriff[,kategorie]``, header optional, comma, semicolon or tab) or a
         plain list (one term per line); returns (new, read).  A category column in the
-        file wins over ``kategorie``."""
-        gelesen = listenimport.lies_liste(pfad, "kategorie", kategorie)
-        neu = sum(self.fuege_hinzu(begriffe, kat) for kat, begriffe in gelesen.gruppen.items())
-        return neu, gelesen.zeilen
+        file wins over ``category``."""
+        read_in = list_import.read_list(path, "kategorie", category)
+        new = sum(self.add(terms, cat) for cat, terms in read_in.groups.items())
+        return new, read_in.lines
 
     # -- bundled lists ---------------------------------------------------------------------------
-    def grundbestand(self) -> dict[str, int]:
+    def seed(self) -> dict[str, int]:
         """Load the bundled lists and the eponyms, take over lists of the old folder once."""
-        from pseudonymed.erkennung.ner import EPONYME
+        from pseudonymed.detection.ner import EPONYMS
 
-        zaehlung: dict[str, int] = {}
-        for pfad, kategorie in GRUNDBESTAND:
-            if pfad.exists():
-                zaehlung[kategorie] = self.fuege_hinzu(_zeilen(pfad), kategorie)
-        zaehlung[KATEGORIE_EPONYME] = self.fuege_hinzu((e for e in EPONYME if len(e) >= 4),
-                                                       KATEGORIE_EPONYME)
-        for datei in _legacy_dateien():
-            kategorie = _legacy_kategorie(datei)
-            zaehlung[kategorie] = zaehlung.get(kategorie, 0) + \
-                self.fuege_hinzu(_zeilen(datei), kategorie)
-            _markiere_uebernommen(datei)
-        self.verbindung.execute(
+        counts: dict[str, int] = {}
+        for path, category in SEED_LISTS:
+            if path.exists():
+                counts[category] = self.add(_rows(path), category)
+        counts[CATEGORY_EPONYMS] = self.add((e for e in EPONYMS if len(e) >= 4), CATEGORY_EPONYMS)
+        for file in _legacy_files():
+            category = _legacy_category(file)
+            counts[category] = counts.get(category, 0) + \
+                self.add(_rows(file), category)
+            _mark_adopted(file)
+        self.connection.execute(
             "INSERT OR REPLACE INTO vokabular_meta (schluessel, wert) VALUES ('grundbestand', ?)",
             (dt.datetime.now().isoformat(timespec="seconds"),))
         self._bump()
-        self.verbindung.commit()
-        return zaehlung
+        self.connection.commit()
+        return counts

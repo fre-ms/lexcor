@@ -1,18 +1,18 @@
 """Semantic lexicon: what a term *is*, from bundled reference data.
 
-The protected vocabulary (:mod:`pseudonymed.erkennung.vokabular`) only says that a word must
+The protected vocabulary (:mod:`pseudonymed.detection.vocabulary`) only says that a word must
 not be redacted by the guesswork.  The lexicon adds the class of a term and its role:
 
-* role ``fach`` - medical terms by class (Anatomie, Medikament, Erkrankung, Symptom,
+* role ``terms`` - medical terms by class (Anatomie, Medikament, Erkrankung, Symptom,
   Substanz, Verfahren, Psyche, Physiologie, Organismus, Laborwert, Befund, Eponym);
-* role ``merkmal`` - quasi-identifying attributes (Beruf, Erwerbsstatus, Titel, Klinik,
+* role ``feature`` - quasi-identifying attributes (Beruf, Erwerbsstatus, Titel, Klinik,
   Studie) that a residual-risk estimate should weigh and that must never be protected.
 
-The table ``lexikon`` lives in the pseudonym database next to ``vokabular``.  Bundled sources
+The table ``lexicon`` lives in the pseudonym database next to ``vocabulary``.  Bundled sources
 are (re)loaded whenever their file changes (a hash per source in ``lexikon_meta``); rows of
 the source ``Nutzer`` are left alone, and bundled rows the user deleted stay deleted
-(``lexikon_geloescht``).  The ``merkmal`` rows are the identifiers of the identifiers step
-(:mod:`pseudonymed.erkennung.identifikatoren`), which redacts them by default; the ``fach``
+(``lexikon_geloescht``).  The ``feature`` rows are the identifiers of the identifiers step
+(:mod:`pseudonymed.detection.identifiers`), which redacts them by default; the ``terms``
 rows and the control step do not use the lexicon yet.  ``PSEUDONYMED_LEXIKON=0`` switches the
 loading off (the test suite does so, except in the lexicon tests).
 """
@@ -30,12 +30,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from pseudonymed import umgebung
+from pseudonymed import environment
 
-DATEN = Path(__file__).resolve().parent.parent / "daten"
-FACH = "fach"
-MERKMAL = "merkmal"
-NUTZER = "Nutzer"
+DATA = Path(__file__).resolve().parent.parent / "data"
+MEDICAL = "fach"
+FEATURE = "merkmal"
+USER = "Nutzer"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS lexikon (
     begriff TEXT NOT NULL COLLATE NOCASE,
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS lexikon_version (
     version INTEGER NOT NULL
 );
 """
-MIN_LAENGE = 2
+MIN_LENGTH = 2
 
 # Correspondence with the GeMTeX type system for identifying information (annotation
 # guideline, 2nd version, 7 September 2025, doi:10.5281/zenodo.15747389).  Studies are IDs
@@ -73,37 +73,37 @@ MIN_LAENGE = 2
 GEMTEX = {"Beruf": "PROFESSION", "Titel": "NAME_TITLE", "Klinik": "LOCATION_HOSPITAL",
           "Studie": "ID", "Erwerbsstatus": ""}
 
-Zeile = tuple[str, str, str, str, str]  # begriff, klasse, rolle, kennung, zusatz (JSON)
+Row = tuple[str, str, str, str, str]  # begriff, klasse, rolle, kennung, zusatz (JSON)
 
 
-def _offen(pfad: Path) -> TextIO:
+def _open_text(path: Path) -> TextIO:
     """A UTF-8 text handle on a plain or gzip-compressed data file."""
-    return gzip.open(pfad, "rt", encoding="utf-8") if pfad.suffix == ".gz" else \
-        pfad.open(encoding="utf-8")
+    return gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else \
+        path.open(encoding="utf-8")
 
 
-def _csv(pfad: Path) -> Iterator[dict[str, str]]:
+def _csv(path: Path) -> Iterator[dict[str, str]]:
     """The records of a CSV data file with a header line, comment lines skipped."""
-    with _offen(pfad) as f:
+    with _open_text(path) as f:
         yield from csv.DictReader(z for z in f if not z.startswith("#"))
 
 
-def _liste(pfad: Path) -> Iterator[str]:
+def _list_lines(path: Path) -> Iterator[str]:
     """Non-empty, non-comment lines of a plain list file, stripped."""
-    with _offen(pfad) as f:
+    with _open_text(path) as f:
         for z in f:
             z = z.strip()
             if z and not z.startswith("#"):
                 yield z
 
 
-def _json(**werte: object) -> str:
+def _json(**values: object) -> str:
     """Compact JSON of the given details without empty values ("" when nothing remains)."""
-    sauber = {k: v for k, v in werte.items() if v not in ("", None)}
-    return json.dumps(sauber, ensure_ascii=False, separators=(",", ":")) if sauber else ""
+    clean = {k: v for k, v in values.items() if v not in ("", None)}
+    return json.dumps(clean, ensure_ascii=False, separators=(",", ":")) if clean else ""
 
 
-def _zahl(text: str | None) -> int | None:
+def _number(text: str | None) -> int | None:
     """The integer in a CSV cell (``"12.0"`` included), None when empty or not a number."""
     try:
         return int(float(text)) if text not in (None, "") else None
@@ -112,219 +112,219 @@ def _zahl(text: str | None) -> int | None:
 
 
 # -- sources ---------------------------------------------------------------------------------------
-def _fachklassen(pfad: Path) -> Iterator[Zeile]:
-    """Rows of the Wikidata class table: term, medical class and the item as ``kennung``."""
-    for z in _csv(pfad):
-        yield z["begriff"], z["klasse"], FACH, z.get("kennung", ""), ""
+def _medical_categories(path: Path) -> Iterator[Row]:
+    """Rows of the Wikidata class table: term, medical class and the item as ``code``."""
+    for z in _csv(path):
+        yield z["begriff"], z["klasse"], MEDICAL, z.get("kennung", ""), ""
 
 
-def _liste_als(klasse: str) -> Callable[[Path], Iterator[Zeile]]:
-    """A reader that files every line of a plain list under the medical class ``klasse``."""
-    def lesen(pfad: Path) -> Iterator[Zeile]:
-        """One ``fach`` row per list line, without identifier or details."""
-        for b in _liste(pfad):
-            yield b, klasse, FACH, "", ""
-    return lesen
+def _list_as(category: str) -> Callable[[Path], Iterator[Row]]:
+    """A reader that files every line of a plain list under the medical class ``category``."""
+    def reader(path: Path) -> Iterator[Row]:
+        """One ``terms`` row per list line, without identifier or details."""
+        for b in _list_lines(path):
+            yield b, category, MEDICAL, "", ""
+    return reader
 
 
-def _berufe(pfad: Path) -> Iterator[Zeile]:
-    """Professions (KldB) and employment statuses with their base form; ``nachname`` marks
+def _professions(path: Path) -> Iterator[Row]:
+    """Professions (KldB) and employment statuses with their base form; ``surname`` marks
     the professions that are also common surnames."""
-    for z in _csv(pfad):
-        yield (z["begriff"], z.get("klasse") or "Beruf", MERKMAL, z.get("kennung", ""),
+    for z in _csv(path):
+        yield (z["begriff"], z.get("klasse") or "Beruf", FEATURE, z.get("kennung", ""),
                _json(grundform=z.get("grundform", ""),
                      nachname=1 if z.get("nachname", "").strip() in ("1", "ja", "true") else None))
 
 
-def _titel(pfad: Path) -> Iterator[Zeile]:
+def _titles(path: Path) -> Iterator[Row]:
     """One row for the full designation and one for its abbreviation (``Dr. med.``), which is
     what letters actually contain; art and country keep rows of the same word apart."""
-    for z in _csv(pfad):
-        art, land, abk = z.get("art", ""), z.get("land", ""), z.get("abkuerzung", "").strip()
-        yield z["begriff"], "Titel", MERKMAL, f"{art}|{land}", _json(art=art, land=land,
-                                                                     abkuerzung=abk)
-        if abk:
-            yield abk, "Titel", MERKMAL, f"{art}|{land}|{z['begriff']}", _json(
-                art=art, land=land, bedeutung=z["begriff"])
+    for z in _csv(path):
+        kind, country, abbr = z.get("art", ""), z.get("land", ""), z.get("abkuerzung", "").strip()
+        yield z["begriff"], "Titel", FEATURE, f"{kind}|{country}", _json(
+            art=kind, land=country, abkuerzung=abbr)
+        if abbr:
+            yield abbr, "Titel", FEATURE, f"{kind}|{country}|{z['begriff']}", _json(
+                art=kind, land=country, bedeutung=z["begriff"])
 
 
-def _kliniken(pfad: Path) -> Iterator[Zeile]:
+def _hospitals(path: Path) -> Iterator[Row]:
     """Hospitals of the DACH directories, keyed by country and directory number, with place,
     beds and provider as details."""
-    for z in _csv(pfad):
-        land = z.get("land", "")
-        yield (z["name"], "Klinik", MERKMAL, f"{land}:{z.get('kennung', '')}",
+    for z in _csv(path):
+        country = z.get("land", "")
+        yield (z["name"], "Klinik", FEATURE, f"{country}:{z.get('kennung', '')}",
                _json(typ=z.get("typ", ""), ort=z.get("ort", ""), plz=z.get("plz", ""),
-                     gemeinde=z.get("gemeinde_kennung", ""), land=land,
-                     betten=_zahl(z.get("betten")), traeger=z.get("traeger", "")))
+                     gemeinde=z.get("gemeinde_kennung", ""), land=country,
+                     betten=_number(z.get("betten")), traeger=z.get("traeger", "")))
 
 
-def _studien(pfad: Path) -> Iterator[Zeile]:
+def _studies(path: Path) -> Iterator[Row]:
     """The registry number carries the details; the acronym row only points to it."""
-    for z in _csv(pfad):
-        kennung = f"{z.get('register', '')}:{z.get('kennung', '')}"
-        zusatz = _json(teilnehmer=_zahl(z.get("teilnehmer")),
-                       teilnehmer_art=z.get("teilnehmer_art", ""),
-                       zentren_dach=_zahl(z.get("zentren_dach")),
-                       laender=z.get("laender_dach", ""),
-                       orte=" | ".join((z.get("orte_dach") or "").split(" | ")[:5]))
+    for z in _csv(path):
+        code = f"{z.get('register', '')}:{z.get('kennung', '')}"
+        extra = _json(teilnehmer=_number(z.get("teilnehmer")),
+                      teilnehmer_art=z.get("teilnehmer_art", ""),
+                      zentren_dach=_number(z.get("zentren_dach")),
+                      laender=z.get("laender_dach", ""),
+                      orte=" | ".join((z.get("orte_dach") or "").split(" | ")[:5]))
         if z.get("kennung"):
-            yield z["kennung"], "Studie", MERKMAL, kennung, zusatz
-        akronym = (z.get("akronym") or "").strip()
-        if len(akronym) >= 3:
-            yield akronym, "Studie", MERKMAL, kennung, ""
+            yield z["kennung"], "Studie", FEATURE, code, extra
+        acronym = (z.get("akronym") or "").strip()
+        if len(acronym) >= 3:
+            yield acronym, "Studie", FEATURE, code, ""
 
 
-def _eponyme() -> Iterator[Zeile]:
-    """The eponyms of the NER step (four characters or more) as ``fach`` rows."""
-    from pseudonymed.erkennung.ner import EPONYME
+def _eponyms() -> Iterator[Row]:
+    """The eponyms of the NER step (four characters or more) as ``terms`` rows."""
+    from pseudonymed.detection.ner import EPONYMS
 
-    for e in sorted(EPONYME):
+    for e in sorted(EPONYMS):
         if len(e) >= 4:
-            yield e, "Eponym", FACH, "", ""
+            yield e, "Eponym", MEDICAL, "", ""
 
 
 @dataclass(frozen=True)
-class Quelle:
+class Source:
     """A bundled source: its name in ``lexikon_meta``, its file (None for a source computed
     in code) and the reader that yields its rows."""
 
     name: str
-    datei: Path | None
-    lesen: Callable[..., Iterator[Zeile]]
+    file: Path | None
+    reader: Callable[..., Iterator[Row]]
 
 
-QUELLEN: tuple[Quelle, ...] = (
-    Quelle("Wikidata", DATEN / "fachklassen_de.csv.gz", _fachklassen),
-    Quelle("Körperteile", DATEN / "koerperteile_de.txt", _liste_als("Anatomie")),
-    Quelle("Befundbegriffe", DATEN / "befundbegriffe_de.txt", _liste_als("Befund")),
-    Quelle("Laborwerte", DATEN / "laborwerte_de.txt", _liste_als("Laborwert")),
-    Quelle("Eponyme", None, _eponyme),
-    Quelle("Berufe", DATEN / "berufe_de.csv.gz", _berufe),
-    Quelle("Titel", DATEN / "titel_de.csv.gz", _titel),
-    Quelle("Kliniken", DATEN / "kliniken_dach.csv.gz", _kliniken),
-    Quelle("Studien", DATEN / "studien_dach.csv.gz", _studien),
+SOURCES: tuple[Source, ...] = (
+    Source("Wikidata", DATA / "fachklassen_de.csv.gz", _medical_categories),
+    Source("Körperteile", DATA / "koerperteile_de.txt", _list_as("Anatomie")),
+    Source("Befundbegriffe", DATA / "befundbegriffe_de.txt", _list_as("Befund")),
+    Source("Laborwerte", DATA / "laborwerte_de.txt", _list_as("Laborwert")),
+    Source("Eponyme", None, _eponyms),
+    Source("Berufe", DATA / "berufe_de.csv.gz", _professions),
+    Source("Titel", DATA / "titel_de.csv.gz", _titles),
+    Source("Kliniken", DATA / "kliniken_dach.csv.gz", _hospitals),
+    Source("Studien", DATA / "studien_dach.csv.gz", _studies),
 )
 
 
-def _stand(q: Quelle) -> str:
+def _state(q: Source) -> str:
     """Short hash of a source's current content: its file bytes, or the rows it computes."""
-    if q.datei is None:
-        zeilen = "\n".join("\t".join(z) for z in q.lesen())
-        return hashlib.sha256(zeilen.encode("utf-8")).hexdigest()[:16]
-    return hashlib.sha256(q.datei.read_bytes()).hexdigest()[:16]
+    if q.file is None:
+        lines = "\n".join("\t".join(z) for z in q.reader())
+        return hashlib.sha256(lines.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(q.file.read_bytes()).hexdigest()[:16]
 
 
-def aktiv() -> bool:
+def active() -> bool:
     """Is loading switched on (``PSEUDONYMED_LEXIKON`` is not ``0``)?"""
-    return umgebung.variable("LEXIKON", "1") != "0"
+    return environment.variable("LEXIKON", "1") != "0"
 
 
-def _zu_laden(q: Quelle, namen: set[str] | None) -> bool:
+def _should_load(q: Source, names: set[str] | None) -> bool:
     """Is a bundled source present on disk and, when names were given, among them?"""
-    if q.datei is not None and not q.datei.exists():
+    if q.file is not None and not q.file.exists():
         return False
-    return not namen or q.name in namen
+    return not names or q.name in names
 
 
-def _zeilen_von(q: Quelle) -> Iterator[Zeile]:
+def _rows_of(q: Source) -> Iterator[Row]:
     """The rows of a source with inner whitespace collapsed; terms shorter than
-    ``MIN_LAENGE`` are left out."""
-    args = () if q.datei is None else (q.datei,)
-    for b, k, r, ke, zu in q.lesen(*args):
-        if len(b.strip()) >= MIN_LAENGE:
-            yield " ".join(b.split()), k, r, ke, zu
+    ``MIN_LENGTH`` are left out."""
+    args = () if q.file is None else (q.file,)
+    for b, k, r, code, extra in q.reader(*args):
+        if len(b.strip()) >= MIN_LENGTH:
+            yield " ".join(b.split()), k, r, code, extra
 
 
-def _lade_quelle(verbindung: sqlite3.Connection, q: Quelle, stand: str) -> int:
-    """Replaces the rows of one source and records ``stand`` in ``lexikon_meta``; returns
+def _load_source(connection: sqlite3.Connection, q: Source, state: str) -> int:
+    """Replaces the rows of one source and records ``state`` in ``lexikon_meta``; returns
     the number of rows inserted."""
-    verbindung.execute("DELETE FROM lexikon WHERE quelle = ?", (q.name,))
-    vorher = verbindung.total_changes
-    verbindung.executemany(
+    connection.execute("DELETE FROM lexikon WHERE quelle = ?", (q.name,))
+    before = connection.total_changes
+    connection.executemany(
         "INSERT OR IGNORE INTO lexikon (begriff, klasse, rolle, quelle, kennung, zusatz)"
         " VALUES (?, ?, ?, ?, ?, ?)",
-        ((b, k, r, q.name, ke, zu) for b, k, r, ke, zu in _zeilen_von(q)))
-    n = verbindung.total_changes - vorher
-    verbindung.execute(
+        ((b, k, r, q.name, code, extra) for b, k, r, code, extra in _rows_of(q)))
+    n = connection.total_changes - before
+    connection.execute(
         "INSERT OR REPLACE INTO lexikon_meta (quelle, stand, anzahl, geladen)"
         " VALUES (?, ?, ?, ?)",
-        (q.name, stand, n, dt.datetime.now().isoformat(timespec="seconds")))
+        (q.name, state, n, dt.datetime.now().isoformat(timespec="seconds")))
     return n
 
 
-def _geloeschte_entfernen(verbindung: sqlite3.Connection) -> None:
+def _remove_deleted(connection: sqlite3.Connection) -> None:
     """Removes bundled rows the user deleted earlier (``lexikon_geloescht``) after a reload
     brought them back; rows of the source ``Nutzer`` stay."""
-    verbindung.execute(
+    connection.execute(
         "DELETE FROM lexikon WHERE quelle != ? AND EXISTS (SELECT 1 FROM lexikon_geloescht g"
         " WHERE g.begriff = lexikon.begriff AND g.klasse = lexikon.klasse"
-        " AND g.kennung = lexikon.kennung)", (NUTZER,))
+        " AND g.kennung = lexikon.kennung)", (USER,))
 
 
-def sicherstellen(verbindung: sqlite3.Connection, erzwingen: bool = False,
-                  quellen: Iterable[str] | None = None) -> dict[str, int]:
+def ensure(connection: sqlite3.Connection, force: bool = False,
+           sources: Iterable[str] | None = None) -> dict[str, int]:
     """Create the tables and (re)load every bundled source whose data changed (only the
-    sources named in ``quellen``, when given).  Returns the number of rows loaded per
+    sources named in ``sources``, when given).  Returns the number of rows loaded per
     reloaded source (empty when all is current)."""
-    if not aktiv() and not erzwingen:
+    if not active() and not force:
         return {}
-    verbindung.executescript(SCHEMA)
-    alt = dict(verbindung.execute("SELECT quelle, stand FROM lexikon_meta"))
-    namen = set(quellen) if quellen is not None else None
-    geladen: dict[str, int] = {}
-    for q in QUELLEN:
-        if not _zu_laden(q, namen):
+    connection.executescript(SCHEMA)
+    old = dict(connection.execute("SELECT quelle, stand FROM lexikon_meta"))
+    names = set(sources) if sources is not None else None
+    loaded: dict[str, int] = {}
+    for q in SOURCES:
+        if not _should_load(q, names):
             continue
-        stand = _stand(q)
-        if erzwingen or alt.get(q.name) != stand:
-            geladen[q.name] = _lade_quelle(verbindung, q, stand)
-    if geladen:
-        _geloeschte_entfernen(verbindung)
-        erhoehe_version(verbindung)
-    verbindung.commit()
-    return geladen
+        state = _state(q)
+        if force or old.get(q.name) != state:
+            loaded[q.name] = _load_source(connection, q, state)
+    if loaded:
+        _remove_deleted(connection)
+        increment_version(connection)
+    connection.commit()
+    return loaded
 
 
-def version(verbindung: sqlite3.Connection) -> int:
+def version(connection: sqlite3.Connection) -> int:
     """Counter that changes with every change of the lexicon (for cached matchers)."""
     try:
-        r = verbindung.execute("SELECT version FROM lexikon_version WHERE id = 1").fetchone()
+        r = connection.execute("SELECT version FROM lexikon_version WHERE id = 1").fetchone()
     except sqlite3.OperationalError:
         return 0
     return int(r[0]) if r else 0
 
 
-def erhoehe_version(verbindung: sqlite3.Connection) -> None:
+def increment_version(connection: sqlite3.Connection) -> None:
     """Increments the lexicon's version counter (creating it at 1); not committed here."""
-    verbindung.execute(
+    connection.execute(
         "INSERT INTO lexikon_version (id, version) VALUES (1, 1)"
         " ON CONFLICT(id) DO UPDATE SET version = version + 1")
 
 
-def je_klasse(verbindung: sqlite3.Connection) -> list[tuple[str, str, int]]:
+def per_class(connection: sqlite3.Connection) -> list[tuple[str, str, int]]:
     """(class, role, rows), merkmal classes first; empty when the table does not exist."""
     try:
-        return [tuple(r) for r in verbindung.execute(
+        return [tuple(r) for r in connection.execute(
             "SELECT klasse, rolle, COUNT(*) FROM lexikon GROUP BY klasse, rolle"
             " ORDER BY rolle DESC, COUNT(*) DESC, klasse")]
     except sqlite3.OperationalError:
         return []
 
 
-def gemtex_typ(klasse: str, zusatz: str = "") -> str:
+def gemtex_type(category: str, extra: str = "") -> str:
     """GeMTeX type of a lexicon row ("" where the guideline annotates nothing)."""
-    if klasse == "Titel":
+    if category == "Titel":
         try:
-            art = json.loads(zusatz).get("art", "") if zusatz else ""
+            kind = json.loads(extra).get("art", "") if extra else ""
         except ValueError:
-            art = ""
-        return GEMTEX["Titel"] if art in ("", "akademisch") else ""
-    return GEMTEX.get(klasse, "")
+            kind = ""
+        return GEMTEX["Titel"] if kind in ("", "akademisch") else ""
+    return GEMTEX.get(category, "")
 
 
-def klassen_von(verbindung: sqlite3.Connection, begriff: str) -> list[tuple[str, str]]:
+def categories_of(connection: sqlite3.Connection, term: str) -> list[tuple[str, str]]:
     """All (class, role) pairs of a term, case-insensitively."""
-    return [tuple(r) for r in verbindung.execute(
+    return [tuple(r) for r in connection.execute(
         "SELECT DISTINCT klasse, rolle FROM lexikon WHERE begriff = ? ORDER BY rolle, klasse",
-        (" ".join(begriff.split()),))]
+        (" ".join(term.split()),))]

@@ -6,12 +6,12 @@ scores, eponyms.  Spans covered by such a term are protected from those two
 heuristics (the deterministic rules for the patient's own identifiers are
 not affected, a patient really called "Herz" is still redacted).
 
-The terms live in the ``vokabular`` table of the pseudonym database
-(:mod:`pseudonymed.erkennung.vokabular`): the bundled lists (German labels and aliases
+The terms live in the ``vocabulary`` table of the pseudonym database
+(:mod:`pseudonymed.detection.vocabulary`): the bundled lists (German labels and aliases
 from Wikidata for items with MeSH, ICD-10, ATC or INN identifiers, CC0; body parts;
-findings terms; the eponyms of :mod:`pseudonymed.erkennung.ner`) are loaded into it on
+findings terms; the eponyms of :mod:`pseudonymed.detection.ner`) are loaded into it on
 first use, and the user adds, deletes and imports terms there (vocabulary step,
-``pseudonymed fachbegriffe``).  :func:`laden` still reads the bundled files directly, as
+``pseudonymed fachbegriffe``).  :func:`load` still reads the bundled files directly, as
 the fallback when the database cannot be opened.
 
 Matching is case-insensitive, tolerates German inflection (-s, -n, -en, -e,
@@ -29,21 +29,21 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pseudonymed import umgebung
+from pseudonymed import environment
 
-BASIS = Path(__file__).resolve().parent.parent / "daten" / "fachbegriffe_de.txt.gz"
-KOERPERTEILE = Path(__file__).resolve().parent.parent / "daten" / "koerperteile_de.txt"
-BEFUNDBEGRIFFE = Path(__file__).resolve().parent.parent / "daten" / "befundbegriffe_de.txt"
+BASE = Path(__file__).resolve().parent.parent / "data" / "fachbegriffe_de.txt.gz"
+BODY_PARTS = Path(__file__).resolve().parent.parent / "data" / "koerperteile_de.txt"
+FINDINGS_TERMS = Path(__file__).resolve().parent.parent / "data" / "befundbegriffe_de.txt"
 _TOKEN = re.compile(r"[^\W\d_][\w\-]*|\d+[\w\-]*")
-_SUFFIXE = ("ern", "en", "es", "er", "em", "e", "n", "s")
+_SUFFIXES = ("ern", "en", "es", "er", "em", "e", "n", "s")
 _TRANS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
-_KLAMMER = re.compile(r"\s*\([^)]*\)\s*$")
-MAX_WOERTER = 5
+_BRACKET = re.compile(r"\s*\([^)]*\)\s*$")
+MAX_WORDS = 5
 # Head nouns after which the first part of a hyphenated term is an eponym that appears on
 # its own in reports ("Babinski-Zeichen" -> "Babinski positiv").  Anatomy and chemistry heads
 # are deliberately absent: "Müller-Gang" or "Berlin-Blau" must not protect the surname Müller
 # or the town Berlin from the name recognition.
-_EPONYM_KOEPFE = {
+_EPONYM_HEADS = {
     "zeichen", "syndrom", "test", "probe", "manöver", "manoever", "reflex", "phänomen",
     "phaenomen", "skala", "score", "index", "trias", "kriterien", "klassifikation", "lagerung",
     "griff", "punkt", "position", "stadium", "formel", "gleichung", "koeffizient", "regel",
@@ -52,211 +52,211 @@ _EPONYM_KOEPFE = {
 }
 
 
-def datenordner() -> Path:
-    """The folder of the user's own list files (``fachbegriffe`` in the data folder)."""
-    return umgebung.datenordner() / "fachbegriffe"
+def data_folder() -> Path:
+    """The folder of the user's own list files (``medical_terms`` in the data folder)."""
+    return environment.data_folder() / "fachbegriffe"
 
 
-def _norm(wort: str) -> str:
+def _norm(word: str) -> str:
     """Case-folded word without surrounding punctuation."""
-    return wort.casefold().strip(" .,;:!?\"'()[]")
+    return word.casefold().strip(" .,;:!?\"'()[]")
 
 
-def _formen(begriff: str) -> set[str]:
+def _forms(term: str) -> set[str]:
     """The normalised term as written and with umlauts transliterated (never the empty string)."""
-    n = _norm(begriff)
+    n = _norm(term)
     return {n, n.translate(_TRANS)} - {""}
 
 
-def _eponym_vorderteil(wort: str) -> str | None:
+def _leading_eponym(word: str) -> str | None:
     """The eponym in front of an eponym head ("Babinski" of "Babinski-Zeichen"), else None.
     Only two-part terms with a first part of four or more characters qualify: "Berlin-Blau"
     has a chemistry head, and in "Konigsmark-Hollander-Berlin-Syndrom" the town matters more."""
-    teile = wort.split("-")
-    if len(teile) == 2 and teile[1] in _EPONYM_KOEPFE and len(teile[0]) >= 4:
-        return teile[0]
+    parts = word.split("-")
+    if len(parts) == 2 and parts[1] in _EPONYM_HEADS and len(parts[0]) >= 4:
+        return parts[0]
     return None
 
 
-def _folgt(normen: list[str], i: int, folge: tuple[str, ...]) -> bool:
-    """Do the normalised tokens from ``i`` on spell the phrase ``folge``, each token as written
+def _follows(normed: list[str], i: int, sequence: tuple[str, ...]) -> bool:
+    """Do the normalised tokens from ``i`` on spell the phrase ``sequence``, each token as written
     or with umlauts transliterated?"""
-    if i + len(folge) > len(normen):
+    if i + len(sequence) > len(normed):
         return False
     return all(n == f or n.translate(_TRANS) == f
-               for n, f in zip(normen[i:i + len(folge)], folge, strict=True))
+               for n, f in zip(normed[i:i + len(sequence)], sequence, strict=True))
 
 
-def _ganz_bedeckt(text: str, a: int, b: int, spannen: list[tuple[int, int]]) -> bool:
-    """Does every token of ``text[a:b]`` lie inside one of ``spannen`` (phrases count as a
+def _fully_covered(text: str, a: int, b: int, spans: list[tuple[int, int]]) -> bool:
+    """Does every token of ``text[a:b]`` lie inside one of ``spans`` (phrases count as a
     whole)?"""
-    return all(any(s[0] <= m.start() and m.end() <= s[1] for s in spannen)
+    return all(any(s[0] <= m.start() and m.end() <= s[1] for s in spans)
                for m in _TOKEN.finditer(text, a, b))
 
 
 @dataclass
-class Fachbegriffe:
+class MedicalTerms:
     """The merged vocabulary with its matcher."""
 
-    einzel: set[str] = field(default_factory=set)
-    mehrwort: dict[str, set[tuple[str, ...]]] = field(default_factory=dict)
-    quellen: list[tuple[str, int]] = field(default_factory=list)
+    single_words: set[str] = field(default_factory=set)
+    multi_words: dict[str, set[tuple[str, ...]]] = field(default_factory=dict)
+    sources: list[tuple[str, int]] = field(default_factory=list)
 
     @property
-    def anzahl(self) -> int:
+    def count(self) -> int:
         """Number of terms held: single words plus whole phrases."""
-        return len(self.einzel) + sum(len(v) for v in self.mehrwort.values())
+        return len(self.single_words) + sum(len(v) for v in self.multi_words.values())
 
-    def fuege_hinzu(self, begriffe: Iterable[str], quelle: str = "") -> int:
+    def add(self, terms: Iterable[str], source: str = "") -> int:
         """Adds raw terms in both umlaut spellings (comments and entries under three characters
         skipped, a trailing bracket removed); returns how many were taken and records that
-        count under ``quelle`` when one is given."""
+        count under ``source`` when one is given."""
         n = 0
-        for roh in begriffe:
-            begriff = _KLAMMER.sub("", roh.strip())
-            if len(begriff) < 3 or begriff.startswith("#"):
+        for raw in terms:
+            term = _BRACKET.sub("", raw.strip())
+            if len(term) < 3 or term.startswith("#"):
                 continue
-            for form in _formen(begriff):
-                self._merke(form)
+            for form in _forms(term):
+                self._remember(form)
             n += 1
-        if quelle:
-            self.quellen.append((quelle, n))
+        if source:
+            self.sources.append((source, n))
         return n
 
-    def _merke(self, form: str) -> None:
-        """Files one normalised form as a single word or, up to ``MAX_WOERTER`` tokens, as a
+    def _remember(self, form: str) -> None:
+        """Files one normalised form as a single word or, up to ``MAX_WORDS`` tokens, as a
         whole phrase; parts of "Berliner Blau" must not protect "Berlin"."""
         tokens = tuple(t for t in re.split(r"[\s/]+", form) if t)
         if not tokens:
             return
         if len(tokens) == 1:
-            self._merke_einzelwort(tokens[0])
-        elif len(tokens) <= MAX_WOERTER:
-            self.mehrwort.setdefault(tokens[0], set()).add(tokens)
+            self._remember_single_word(tokens[0])
+        elif len(tokens) <= MAX_WORDS:
+            self.multi_words.setdefault(tokens[0], set()).add(tokens)
 
-    def _merke_einzelwort(self, wort: str) -> None:
+    def _remember_single_word(self, word: str) -> None:
         """Adds a single word and, for "Babinski-Zeichen", the eponym "Babinski" that reports
         use on its own."""
-        self.einzel.add(wort)
-        eponym = _eponym_vorderteil(wort)
+        self.single_words.add(word)
+        eponym = _leading_eponym(word)
         if eponym:
-            self.einzel.add(eponym)
+            self.single_words.add(eponym)
 
-    def ist_fachbegriff(self, wort: str) -> bool:
+    def is_medical_term(self, word: str) -> bool:
         """Single word, inflected forms and hyphen parts included."""
-        return any(self._form_bekannt(form) for form in _formen(wort))
+        return any(self._form_known(form) for form in _forms(word))
 
-    def _form_bekannt(self, form: str) -> bool:
+    def _form_known(self, form: str) -> bool:
         """Is one normalised form listed, an inflected form of a listed word, or a hyphenated
         compound with a listed part ("Parkinson-Syndrom", "Herz-")?"""
-        if form in self.einzel or self._gestammt(form):
+        if form in self.single_words or self._stemmed(form):
             return True
-        if "-" in form and any(self._teil_bekannt(t) for t in form.split("-")):
+        if "-" in form and any(self._part_known(t) for t in form.split("-")):
             return True
-        return form.endswith("-") and form[:-1] in self.einzel
+        return form.endswith("-") and form[:-1] in self.single_words
 
-    def _teil_bekannt(self, teil: str) -> bool:
+    def _part_known(self, part: str) -> bool:
         """A hyphen part of at least three characters that is listed, inflected or not."""
-        return len(teil) >= 3 and (teil in self.einzel or self._gestammt(teil))
+        return len(part) >= 3 and (part in self.single_words or self._stemmed(part))
 
-    def _gestammt(self, t: str) -> bool:
+    def _stemmed(self, t: str) -> bool:
         """Is ``t`` a listed word with a German inflection suffix on a stem of four or more
         characters?"""
-        return any(t.endswith(s) and len(t) - len(s) >= 4 and t[: -len(s)] in self.einzel
-                   for s in _SUFFIXE)
+        return any(t.endswith(s) and len(t) - len(s) >= 4 and t[: -len(s)] in self.single_words
+                   for s in _SUFFIXES)
 
-    def spannen(self, text: str) -> list[tuple[int, int]]:
+    def spans(self, text: str) -> list[tuple[int, int]]:
         """Character spans of medical terms in ``text`` (multi-word first, then single)."""
         tokens = [(m.start(), m.end(), m.group(0)) for m in _TOKEN.finditer(text)]
-        normen = [_norm(w) for _a, _b, w in tokens]
-        belegt = [False] * len(tokens)
-        ergebnis: list[tuple[int, int]] = []
+        normed = [_norm(w) for _a, _b, w in tokens]
+        occupied = [False] * len(tokens)
+        result: list[tuple[int, int]] = []
         for i, (a, _b, _w) in enumerate(tokens):
-            n = self._phrasenlaenge(normen, i)
+            n = self._phrase_length(normed, i)
             if n:
-                ergebnis.append((a, tokens[i + n - 1][1]))
-                belegt[i:i + n] = [True] * n
-        ergebnis += [(a, b) for i, (a, b, w) in enumerate(tokens)
-                     if not belegt[i] and self._zaehlt_einzeln(w)]
-        ergebnis.sort()
-        return ergebnis
+                result.append((a, tokens[i + n - 1][1]))
+                occupied[i:i + n] = [True] * n
+        result += [(a, b) for i, (a, b, w) in enumerate(tokens)
+                   if not occupied[i] and self._counts_alone(w)]
+        result.sort()
+        return result
 
-    def _phrasenlaenge(self, normen: list[str], i: int) -> int:
+    def _phrase_length(self, normed: list[str], i: int) -> int:
         """Token count of the longest listed phrase that starts at token ``i`` (0 when none);
         the first token is looked up as written and with umlauts transliterated."""
-        kandidaten = self.mehrwort.get(normen[i]) or self.mehrwort.get(
-            normen[i].translate(_TRANS))
-        if not kandidaten:
+        candidates = self.multi_words.get(normed[i]) or self.multi_words.get(
+            normed[i].translate(_TRANS))
+        if not candidates:
             return 0
-        for folge in sorted(kandidaten, key=len, reverse=True):
-            if _folgt(normen, i, folge):
-                return len(folge)
+        for sequence in sorted(candidates, key=len, reverse=True):
+            if _follows(normed, i, sequence):
+                return len(sequence)
         return 0
 
-    def _zaehlt_einzeln(self, wort: str) -> bool:
+    def _counts_alone(self, word: str) -> bool:
         """Is a lone token a protected term?  Words of up to three letters count only when
         they start with a capital: "hat" is a verb, "Ohr", "Arm" and "HAT" are terms."""
-        if len(wort) <= 3 and not wort[:1].isupper():
+        if len(word) <= 3 and not word[:1].isupper():
             return False
-        return self.ist_fachbegriff(wort)
+        return self.is_medical_term(word)
 
-    def geschuetzt(self, text: str, a: int, b: int, spannen: list[tuple[int, int]] | None = None,
-                   ganz: bool = False) -> bool:
-        """Does ``text[a:b]`` touch a protected term (or, with ``ganz``, consist of them)?"""
-        spannen = self.spannen(text) if spannen is None else spannen
-        beruehrt = [s for s in spannen if a < s[1] and b > s[0]]
-        if not beruehrt:
+    def is_protected(self, text: str, a: int, b: int, spans: list[tuple[int, int]] | None = None,
+                     whole: bool = False) -> bool:
+        """Does ``text[a:b]`` touch a protected term (or, with ``whole``, consist of them)?"""
+        spans = self.spans(text) if spans is None else spans
+        touched = [s for s in spans if a < s[1] and b > s[0]]
+        if not touched:
             return False
-        return not ganz or _ganz_bedeckt(text, a, b, beruehrt)
+        return not whole or _fully_covered(text, a, b, touched)
 
 
 # -- loading ---------------------------------------------------------------------------------------
-def _lies_liste(pfad: Path) -> Iterator[str]:
+def _read_list(path: Path) -> Iterator[str]:
     """Non-empty, non-comment lines of a plain or gzip-compressed list file, stripped."""
-    oeffnen = gzip.open if pfad.suffix == ".gz" else open
-    with oeffnen(pfad, "rt", encoding="utf-8", errors="replace") as f:
-        for zeile in f:
-            zeile = zeile.strip()
-            if zeile and not zeile.startswith("#"):
-                yield zeile
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                yield line
 
 
-def _gebuendelt_laden(fb: Fachbegriffe) -> None:
+def _load_bundled(fb: MedicalTerms) -> None:
     """Adds the bundled lists that exist on disk, each under its source name, in the order
     base vocabulary, body parts, findings terms."""
-    for pfad, quelle in ((BASIS, f"Basis ({BASIS.name})"), (KOERPERTEILE, "Körperteile"),
-                         (BEFUNDBEGRIFFE, "Befundbegriffe")):
-        if pfad.exists():
-            fb.fuege_hinzu(_lies_liste(pfad), quelle)
+    for path, source in ((BASE, f"Basis ({BASE.name})"), (BODY_PARTS, "Körperteile"),
+                         (FINDINGS_TERMS, "Befundbegriffe")):
+        if path.exists():
+            fb.add(_read_list(path), source)
 
 
-def _nutzerlisten() -> list[Path]:
+def _user_lists() -> list[Path]:
     """The user's own list files (``.txt``, ``.gz``) in the data folder, sorted by name;
     empty when the folder does not exist."""
-    ordner = datenordner()
-    if not ordner.is_dir():
+    folder = data_folder()
+    if not folder.is_dir():
         return []
-    return sorted(p for p in ordner.iterdir() if p.suffix in (".txt", ".gz") and p.is_file())
+    return sorted(p for p in folder.iterdir() if p.suffix in (".txt", ".gz") and p.is_file())
 
 
-def laden(zusatz: Iterable[Path] = (), mit_basis: bool = True,
-          mit_nutzerdaten: bool = True) -> Fachbegriffe:
-    """Builds the vocabulary from the files: the bundled lists (``mit_basis``), the eponyms of
-    the NER step, the files in ``zusatz`` and the user's own lists (``mit_nutzerdaten``), in
+def load(extra: Iterable[Path] = (), with_base: bool = True,
+         with_user_data: bool = True) -> MedicalTerms:
+    """Builds the vocabulary from the files: the bundled lists (``with_base``), the eponyms of
+    the NER step, the files in ``extra`` and the user's own lists (``with_user_data``), in
     that order.  The fallback of :func:`standard` when the database is unusable."""
-    from pseudonymed.erkennung.ner import EPONYME
+    from pseudonymed.detection.ner import EPONYMS
 
-    fb = Fachbegriffe()
-    if mit_basis:
-        _gebuendelt_laden(fb)
-    fb.fuege_hinzu((e for e in EPONYME if len(e) >= 4), "Eponyme")
-    pfade = list(zusatz) + (_nutzerlisten() if mit_nutzerdaten else [])
-    for p in pfade:
-        fb.fuege_hinzu(_lies_liste(p), p.name)
+    fb = MedicalTerms()
+    if with_base:
+        _load_bundled(fb)
+    fb.add((e for e in EPONYMS if len(e) >= 4), "Eponyme")
+    paths = list(extra) + (_user_lists() if with_user_data else [])
+    for p in paths:
+        fb.add(_read_list(p), p.name)
     return fb
 
 
-class _Standardvokabular:
+class _DefaultVocabulary:
     """The vocabulary used by the pipeline, built from the database table and kept until the
     table's version changes; ``cache_clear`` makes the next call rebuild it.  A callable
     object rather than a function with a bolted-on attribute, so that ``cache_clear`` is
@@ -264,28 +264,28 @@ class _Standardvokabular:
 
     def __init__(self) -> None:
         """Starts without a cached vocabulary."""
-        self._cache: tuple[Path, int, Fachbegriffe] | None = None
+        self._cache: tuple[Path, int, MedicalTerms] | None = None
 
-    def __call__(self) -> Fachbegriffe:
+    def __call__(self) -> MedicalTerms:
         """The vocabulary used by the pipeline: built from the database table, rebuilt only
         when the table's version changed; the bundled files when the database is unusable."""
         import sqlite3
 
-        from pseudonymed.erkennung import vokabular as vokmodul
+        from pseudonymed.detection import vocabulary as vocab_mod
 
         try:
-            pfad = vokmodul.standardpfad()
-            with vokmodul.Vokabular(pfad) as v:
+            path = vocab_mod.default_path()
+            with vocab_mod.Vocabulary(path) as v:
                 version = v.version()
-                if self._cache is not None and self._cache[0] == pfad \
+                if self._cache is not None and self._cache[0] == path \
                         and self._cache[1] == version:
                     return self._cache[2]
-                fb = Fachbegriffe()
-                for kategorie, begriffe in v.je_kategorie().items():
-                    fb.fuege_hinzu(begriffe, kategorie)
+                fb = MedicalTerms()
+                for category, terms in v.per_category().items():
+                    fb.add(terms, category)
         except (sqlite3.Error, OSError):
-            return laden()
-        self._cache = (pfad, version, fb)
+            return load()
+        self._cache = (path, version, fb)
         return fb
 
     def cache_clear(self) -> None:
@@ -293,13 +293,13 @@ class _Standardvokabular:
         self._cache = None
 
 
-standard = _Standardvokabular()
+standard = _DefaultVocabulary()
 
 
 # -- import ----------------------------------------------------------------------------------
-def begriffe_aus_mesh_xml(pfad: Path) -> Iterator[str]:
+def terms_from_mesh_xml(path: Path) -> Iterator[str]:
     """Descriptor names and entry terms of a MeSH XML file (NLM or a translation)."""
-    for _ereignis, element in ET.iterparse(pfad, events=("end",)):
+    for _event, element in ET.iterparse(path, events=("end",)):
         if element.tag in ("DescriptorRecord", "SupplementalRecord"):
             for s in element.iter("String"):
                 if s.text and s.text.strip():
@@ -307,48 +307,48 @@ def begriffe_aus_mesh_xml(pfad: Path) -> Iterator[str]:
             element.clear()
 
 
-def begriffe_aus_csv(pfad: Path, spalte: int, trennzeichen: str = ";") -> Iterator[str]:
+def terms_from_csv(path: Path, column: int, delimiter: str = ";") -> Iterator[str]:
     """One column of a CSV file, for ICD-10-GM, ATC or any other table."""
-    with pfad.open(encoding="utf-8", errors="replace", newline="") as f:
-        for zeile in csv.reader(f, delimiter=trennzeichen):
-            if len(zeile) > spalte and zeile[spalte].strip():
-                yield zeile[spalte].strip()
+    with path.open(encoding="utf-8", errors="replace", newline="") as f:
+        for line in csv.reader(f, delimiter=delimiter):
+            if len(line) > column and line[column].strip():
+                yield line[column].strip()
 
 
-NUTZERLISTE = "nutzervokabular"
+USER_LIST = "nutzervokabular"
 
 
-def ergaenze(pfad: Path, name: str = NUTZERLISTE) -> tuple[Path, int]:
-    """Merge the terms of ``pfad`` (one per line or CSV) into the vocabulary table under
+def merge_terms(path: Path, name: str = USER_LIST) -> tuple[Path, int]:
+    """Merge the terms of ``path`` (one per line or CSV) into the vocabulary table under
     the category ``name`` ("nutzervokabular" = Nutzervokabular); returns the database
     and how many were new.  This is what the exported ``.vokabular.txt`` files are for:
     the vocabulary grows with every review."""
-    from pseudonymed.erkennung import vokabular as vokmodul
+    from pseudonymed.detection import vocabulary as vocab_mod
 
-    kategorie = vokmodul.KATEGORIE_NUTZER if name == NUTZERLISTE else name
-    with vokmodul.Vokabular() as v:
-        neu, _gelesen = v.importiere_csv(pfad, kategorie)
-        ziel = v.pfad
+    category = vocab_mod.CATEGORY_USER if name == USER_LIST else name
+    with vocab_mod.Vocabulary() as v:
+        new, _read = v.import_csv(path, category)
+        target = v.path
     standard.cache_clear()
-    return ziel, neu
+    return target, new
 
 
-def importiere(pfad: Path, name: str, format_: str = "liste", spalte: int = 0,
-               trennzeichen: str = ";") -> tuple[Path, int]:
-    """Add the terms of ``pfad`` to the vocabulary table under the category ``name``;
+def import_file(path: Path, name: str, format_: str = "liste", column: int = 0,
+                delimiter: str = ";") -> tuple[Path, int]:
+    """Add the terms of ``path`` to the vocabulary table under the category ``name``;
     returns the database and how many were new."""
     if format_ == "mesh-xml":
-        begriffe = begriffe_aus_mesh_xml(pfad)
+        terms = terms_from_mesh_xml(path)
     elif format_ == "csv":
-        begriffe = begriffe_aus_csv(pfad, spalte, trennzeichen)
+        terms = terms_from_csv(path, column, delimiter)
     elif format_ == "liste":
-        begriffe = _lies_liste(pfad)
+        terms = _read_list(path)
     else:
         raise ValueError(f"Unbekanntes Format: {format_!r} (liste, csv, mesh-xml)")
-    from pseudonymed.erkennung import vokabular as vokmodul
+    from pseudonymed.detection import vocabulary as vocab_mod
 
-    with vokmodul.Vokabular() as v:
-        neu = v.fuege_hinzu(begriffe, name)
-        ziel = v.pfad
+    with vocab_mod.Vocabulary() as v:
+        new = v.add(terms, name)
+        target = v.path
     standard.cache_clear()
-    return ziel, neu
+    return target, new
