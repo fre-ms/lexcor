@@ -206,8 +206,9 @@ them is needed for the core to work. Which of them is worth building is decided 
 For the first the bench has decided: **retrieval by meaning is built with stage 0.3, as a module that proposes
 and never assigns** (decided on 26 November 2026). What it finds is shown in the review window as a proposal
 with its nearness, and nothing of it is in force until a person confirms it. The module and its model are not
-part of the core: the user fetches the model, and the licence of the model is settled before anything of it is
-passed on.
+part of the core: the user fetches the model. The model's page states no licence. Its authors are asked; until
+they answer, the project goes on as if the model were under Apache 2.0, as its English sibling by the same
+authors is (decided on 27 November 2026).
 
 ## 5 The annotation document
 
@@ -366,9 +367,9 @@ lexterm and lexident follow each stage with what is theirs.
 1. **Where a user's vocabulary lives today**: in PseudonyMed's pseudonym database. It moves to the store once,
    by a command; PseudonyMed keeps no second copy.
 2. **One store or two** for a user who has both libraries.
-3. **The first learning module** (section 4.7) is decided: retrieval by meaning, proposing only. Open are the
-   licence of its model, which the model's page does not state, and on what texts a recogniser that learns from
-   a user's decisions may learn.
+3. **The first learning module** (section 4.7) is decided: retrieval by meaning, proposing only. For its model
+   Apache 2.0 is assumed until the authors, who are asked, say otherwise. Open is on what texts a recogniser
+   that learns from a user's decisions may learn.
 4. **Languages other than German**: the rules of inflection and the function words are per language; only
    German is planned.
 5. **The namespace** of the two things that are the core's own (section 3.1): it stays with the core and is
