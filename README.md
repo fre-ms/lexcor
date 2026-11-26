@@ -11,7 +11,7 @@ in four stages with the kinds of match German needs, an annotation document that
 windows for review and for the packages, and the interfaces to a terminology server. lexcor knows nothing
 medical and nothing about persons.
 
-The project is at its first stage (0.1). The [design](docs/design.md) says what is to be built
+The project is at its second stage (0.2): the windows for review are still to come. The [design](docs/design.md) says what is to be built
 and in which order. What is here:
 
 - `lexcor.package`: packages as FHIR CodeSystem (R4, JSON) and as CSV;
@@ -19,8 +19,11 @@ and in which order. What is here:
 - `lexcor.recognise`: `tag`, recognition in four stages with the kinds of match (as written, spelling variant,
   inflected);
 - `lexcor.cover`: `covers`, the generous question whether a span is vocabulary at all;
-- a command line: `lexcor packages list|import|export|remove`, `lexcor tag FILE`, with `--json` and
-  `--language de|en`.
+- `lexcor.annotation`: the annotation document, one JSON file beside a text with what was found and what a
+  person decided (confirm, reject, mark a place); a later run keeps every decision, and a text that has changed
+  keeps its mentions where their wording still stands;
+- a command line: `lexcor packages list|import|export|remove`, `lexcor tag FILE [--annotation FILE]`, with
+  `--json` and `--language de|en`.
 
 ```python
 import lexcor

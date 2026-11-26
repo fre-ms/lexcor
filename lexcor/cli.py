@@ -6,7 +6,7 @@
     lexcor packages import FILE [--url URL] [--version V] [--title T] [--redistributable]
     lexcor packages export PACKAGE FILE [--own-use]
     lexcor packages remove PACKAGE
-    lexcor tag FILE [--package PACKAGE]... [--class CLASS]...
+    lexcor tag FILE [--package PACKAGE]... [--class CLASS]... [--annotation FILE]
 
 A package is named by its URL or, where only one is called so, by its title.  Names of
 commands and options are English; what a person reads is German or English
@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from lexcor import package as packages
+from lexcor.annotation import Annotation, load, packages_of
 from lexcor.language import LANGUAGES, LexError, say, set_language
 from lexcor.recognise import Mention, Variants, tag
 from lexcor.store import Store, StoreError, open_store
@@ -82,6 +83,11 @@ def _parser(program: str) -> argparse.ArgumentParser:
         "this package only, URL or title (may be given several times)"))
     find.add_argument("--class", dest="classes", action="append", metavar="CLASS", help=say(
         "nur diese Klasse (mehrfach möglich)", "this class only (may be given several times)"))
+    find.add_argument("--annotation", "-o", type=Path, metavar="FILE", help=say(
+        "das Annotationsdokument schreiben; ein vorhandenes wird fortgeschrieben, was ein"
+        " Mensch entschieden hat, bleibt",
+        "write the annotation document; one that is there is updated, and what a person"
+        " decided stays"))
     return parser
 
 
@@ -132,10 +138,16 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
     return {"removed": url}, say(f"Entfernt: {url}", f"Removed: {url}")
 
 
-def _tag(store: Store, args: argparse.Namespace, tagger: Tagger) -> tuple[dict[str, Any], str]:
+def _tag(store: Store, args: argparse.Namespace, tagger: Tagger,
+         made_with: str) -> tuple[dict[str, Any], str]:
     text = args.file.read_text(encoding="utf-8")
     chosen = None if args.package is None else [store.find(p) for p in args.package]
     mentions = tagger(text, store, chosen, args.classes)
+    if args.annotation is not None:
+        document = load(args.annotation) if args.annotation.exists() else Annotation()
+        document.update(text, mentions, made_with, made_with, packages_of(store, chosen),
+                        {"packages": sorted(chosen or []), "classes": sorted(args.classes or [])})
+        document.save(args.annotation)
     lines = [f"{m.start}-{m.end}\t{m.text}\t"
              + "; ".join(f"{a.code} {a.display} ({a.kind.value})" for a in m.assignments)
              for m in mentions]
@@ -143,11 +155,16 @@ def _tag(store: Store, args: argparse.Namespace, tagger: Tagger) -> tuple[dict[s
 
 
 def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
-         library: str = "lexcor", variants: Variants = (), tagger: Tagger | None = None) -> int:
+         library: str = "lexcor", variants: Variants = (), tagger: Tagger | None = None,
+         version: str | None = None) -> int:
     """Run one command; returns the exit code.  A library built on the core calls this with
-    its own name (``program``, and ``library`` for the store it keeps in the user's data
-    folder), its table of spellings that stand side by side (``variants``) or, where it
-    recognises by rules of its own, the function that tags (``tagger``)."""
+    its own name and version (``program``, ``version``; an annotation document names them as
+    what made it), ``library`` for the store it keeps in the user's data folder, its table
+    of spellings that stand side by side (``variants``) or, where it recognises by rules of
+    its own, the function that tags (``tagger``)."""
+    from lexcor import __version__
+
+    made_with = f"{program} {version or __version__}"
     if tagger is None:
         def tagger(text: str, store: Store, packages: Iterable[str] | None,
                    classes: Iterable[str] | None) -> list[Mention]:
@@ -160,7 +177,7 @@ def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
     try:
         with open_store(args.store, library) as store:
             document, text = _packages(store, args) if args.command == "packages" \
-                else _tag(store, args, tagger)
+                else _tag(store, args, tagger, made_with)
     except (LexError, OSError, UnicodeDecodeError) as error:
         if not isinstance(error, LexError):  # a file that is not there or not text
             error = LexError("unreadable", str(error), str(error))

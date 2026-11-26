@@ -131,3 +131,29 @@ def test_an_unknown_ending_is_refused(tmp_path: Path) -> None:
 
 def test_writing_is_stable() -> None:
     assert to_codesystem(sample()) == to_codesystem(from_codesystem(to_codesystem(sample())))
+
+
+def test_a_concept_carries_what_else_its_source_says(tmp_path: Path) -> None:
+    package = Package(url="https://example.org/CodeSystem/hospitals", concepts=[
+        Concept("H1", "Waldklinik Tannengrund", "LOCATION_HOSPITAL", "", [],
+                {"town": "Tannengrund", "beds": "120", "class": "ignored", "empty": ""}),
+        Concept("H2", "Seeklinik", "LOCATION_HOSPITAL")])
+    resource = to_codesystem(package)
+    assert {"code": "town", "type": "string"} in resource["property"]
+    assert resource["concept"][0]["property"] == [
+        {"code": "class", "valueString": "LOCATION_HOSPITAL"},
+        {"code": "beds", "valueString": "120"}, {"code": "town", "valueString": "Tannengrund"}]
+    again = from_codesystem(resource)
+    assert again.concepts[0].properties == {"beds": "120", "town": "Tannengrund"}
+    assert again.concepts[1].properties == {} and again == tidy(package)
+    changed = from_codesystem(resource)
+    changed.concepts[0].properties["town"] = "Seeburg"
+    assert changed.sha256() != package.sha256()  # the fingerprint knows the properties
+    file = tmp_path / "hospitals.csv"
+    assert write_csv(package, file) == 2
+    assert file.read_text(encoding="utf-8").splitlines()[:2] == [
+        "term,code,display,class,kind,language,beds,town",
+        "Waldklinik Tannengrund,H1,Waldklinik Tannengrund,LOCATION_HOSPITAL,preferred,,120,"
+        "Tannengrund"]
+    read = read_csv(file, url=package.url)
+    assert [c.properties for c in read.concepts] == [{"beds": "120", "town": "Tannengrund"}, {}]

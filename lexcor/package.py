@@ -34,6 +34,7 @@ SNOMED = "http://snomed.info/sct"
 PARENT = "http://hl7.org/fhir/concept-properties#parent"  # FHIR's own property, not one of ours
 KINDS = ("preferred", "synonym", "abbreviation")
 CSV_COLUMNS = ("term", "code", "display", "class", "kind", "language")
+RESERVED = ("class", "parent")  # properties with a field of their own in a concept
 # designation.use as a package is written: a synonym carries none
 _USES = {"preferred": {"system": DESIGNATION_USAGE, "code": "display"},
          "abbreviation": {"system": TERM_KINDS, "code": "abbreviation"}}
@@ -60,13 +61,16 @@ class Term:
 
 @dataclass
 class Concept:
-    """One meaning in a package: its code, the name to show, its class, and its terms."""
+    """One meaning in a package: its code, the name to show, its class, and its terms.
+    ``properties`` holds what else a source says of it (the town of a hospital, the number
+    of a study), each under a name of the source's choosing."""
 
     code: str
     display: str = ""
     cls: str = ""
     parent: str = ""
     terms: list[Term] = field(default_factory=list)
+    properties: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -112,7 +116,10 @@ def tidy_concept(concept: Concept, language: str = "") -> Concept:
     terms.pop(named, None)
     name = Term(display, named[1], "preferred")
     others = sorted(terms.values(), key=lambda t: (t.kind != "preferred", t.value, t.language))
-    return Concept(concept.code, display, concept.cls, concept.parent, [name, *others])
+    properties = {k: concept.properties[k] for k in sorted(concept.properties)
+                  if k not in RESERVED and concept.properties[k] != ""}
+    return Concept(concept.code, display, concept.cls, concept.parent, [name, *others],
+                   properties)
 
 
 def tidy(package: Package) -> Package:
@@ -127,6 +134,7 @@ def tidy(package: Package) -> Package:
 def to_codesystem(package: Package) -> dict[str, Any]:
     """The package as a FHIR CodeSystem (R4)."""
     concepts = []
+    named: dict[str, str] = {}
     for concept in tidy(package).concepts:
         entry: dict[str, Any] = {"code": concept.code, "display": concept.display}
         designations = []
@@ -147,6 +155,8 @@ def to_codesystem(package: Package) -> dict[str, Any]:
             properties.append({"code": "class", "valueString": concept.cls})
         if concept.parent:
             properties.append({"code": "parent", "valueCode": concept.parent})
+        properties += [{"code": k, "valueString": v} for k, v in concept.properties.items()]
+        named.update(concept.properties)
         if properties:
             entry["property"] = properties
         concepts.append(entry)
@@ -158,7 +168,8 @@ def to_codesystem(package: Package) -> dict[str, Any]:
         "copyright": package.copyright, "caseSensitive": True, "content": "complete",
         "count": len(concepts),
         "property": [{"code": "class", "type": "string"},
-                     {"code": "parent", "uri": PARENT, "type": "code"}],
+                     {"code": "parent", "uri": PARENT, "type": "code"},
+                     *({"code": k, "type": "string"} for k in sorted(named))],
         "concept": concepts}
     if package.language:
         resource["language"] = package.language
@@ -192,8 +203,10 @@ def _concepts(entries: Iterable[dict[str, Any]], language: str, parent: str = ""
             kind = _KINDS_READ.get((str(use.get("system")), str(use.get("code"))), "synonym")
             terms.append(Term(_clean(designation.get("value")),
                               _clean(designation.get("language")), kind))
+        others = {str(p.get("code")): _property(entry, str(p.get("code")))
+                  for p in entry.get("property", []) if p.get("code") not in RESERVED}
         yield Concept(code, _clean(entry.get("display")), _property(entry, "class"),
-                      _property(entry, "parent") or parent, terms)
+                      _property(entry, "parent") or parent, terms, others)
         yield from _concepts(entry.get("concept", []), language, code)
 
 
@@ -248,7 +261,8 @@ def read_csv(path: Path, url: str = "", version: str = "", title: str = "",
     """Read a list made by hand: one row per term with the columns ``term``, ``code``,
     ``display``, ``class``, ``kind``, ``language``, of which only ``term`` is needed.  Rows
     without a code are concepts of their own, the term being the code.  A file without the
-    header line is a plain list of terms.  Without ``url`` the package has none until a
+    header line is a plain list of terms.  Any further column is a property of the concept
+    (the first value a concept's rows give).  Without ``url`` the package has none until a
     store takes it in."""
     path = Path(path)
     with path.open(encoding="utf-8-sig", newline="") as file:
@@ -268,6 +282,9 @@ def read_csv(path: Path, url: str = "", version: str = "", title: str = "",
         concept = concepts.setdefault(code, Concept(code))
         concept.display = concept.display or _clean(record.get("display"))
         concept.cls = concept.cls or _clean(record.get("class"))
+        for column, cell in record.items():  # any further column is a property of the concept
+            if column and column not in CSV_COLUMNS and _clean(cell):
+                concept.properties.setdefault(column, _clean(cell))
         kind = _clean(record.get("kind")).lower()
         concept.terms.append(Term(value, _clean(record.get("language")) or language,
                                   kind if kind in KINDS else "synonym"))
@@ -282,11 +299,14 @@ def write_csv(package: Package, path: Path) -> int:
     count = 0
     with Path(path).open("w", encoding="utf-8", newline="") as file:
         writer = csv.writer(file, lineterminator="\n")
-        writer.writerow(CSV_COLUMNS)
-        for concept in tidy(package).concepts:
+        concepts = tidy(package).concepts
+        further = sorted({k for concept in concepts for k in concept.properties})
+        writer.writerow([*CSV_COLUMNS, *further])
+        for concept in concepts:
             for term in concept.terms:
                 writer.writerow([term.value, concept.code, concept.display, concept.cls,
-                                 term.kind, term.language])
+                                 term.kind, term.language,
+                                 *(concept.properties.get(k, "") for k in further)])
                 count += 1
     return count
 

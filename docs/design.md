@@ -3,7 +3,8 @@
 
 # lexcor: design
 
-Draft 0.1, 26 November 2026. Stage 0.1 is begun (section 10); nothing beyond it is built yet. The bench, the
+Draft 0.2, 27 November 2026. Stage 0.1 is built and the annotation document of stage 0.2 (section 10); the
+windows, the client and the server are not. The bench, the
 prototype the matcher grew out of and two reports (in German) on what exists already and what was measured
 are in the repository of lexterm.
 
@@ -55,6 +56,7 @@ which terminologies are published and which every FHIR terminology server reads 
 | kind of a term: preferred, synonym, abbreviation | `concept.designation.use`: a further name to show carries HL7's code `display`, a synonym carries none, an abbreviation a code of the core's own |
 | class of a concept | `concept.property` with the code `class` |
 | parent of a concept, where the source has a hierarchy | `concept.property` with the code `parent`, FHIR's own property (`http://hl7.org/fhir/concept-properties#parent`) |
+| what else a source says of a concept (the town of a hospital, the number of a study) | further `concept.property` entries, each under a name of the source's choosing; in a CSV file any further column |
 
 A package is written with FHIR's own elements and codes wherever FHIR has one. **Two things it has none for
 are the core's own:**
@@ -231,7 +233,7 @@ The result of recognition and of a person's review is one JSON file beside the t
         {
           "system": "http://fhir.de/CodeSystem/bfarm/icd-10-gm", "version": "2026",
           "code": "G20", "display": "Primäres Parkinson-Syndrom", "class": "disorder",
-          "match": { "kind": "as written" },
+          "term": "Morbus Parkinson", "match": { "kind": "as written" },
           "origin": { "by": "machine", "recogniser": "lexcor 0.2" },
           "status": "proposed"
         }
@@ -247,7 +249,11 @@ The result of recognition and of a person's review is one JSON file beside the t
   found again after the text has changed a little.
 - **`match`** is the kind of match of section 4.3, with `score` for an approximate one.
 - **`origin`** is `machine` with the recogniser, or `person`.
-- **`status`** is `proposed`, `confirmed` or `rejected`; a decision carries who made it and when.
+- **`status`** is `proposed`, `confirmed` or `rejected`. A decision may carry who made it and when
+  (`"decision": {"by": …, "at": …}`): only what the caller says, because the library never reads the clock or
+  asks who is at the keyboard, and a caller that must give the same bytes again leaves both out.
+- **`term`** is the listed wording that matched, which an inflected or otherwise spelt mention does not show.
+- A place a person marked carries `"by": "person"`, with or without an assignment yet.
 
 Rules:
 
@@ -256,8 +262,11 @@ Rules:
 - What a person confirmed or added stays, whatever a later run finds.
 - The same text, the same package versions, the same recognisers and the same file give the same result, byte
   for byte.
-- A mention that is not found again after the text has changed is kept in a list of its own and shown, not
-  dropped.
+- A run replaces only what the same recogniser proposed and nobody has decided: several recognisers can write
+  into one document, each named in the assignments it made.
+- A mention that is not found again after the text has changed is kept in a list of its own (`lost`) and shown,
+  not dropped. One that is found again moves to where its wording stands now, by what stood around it.
+- For reports and logs there is a form with places, classes and statuses and no wording at all.
 
 The form is close to what INCEpTION exchanges (UIMA CAS); both libraries read and write that form as well.
 
@@ -372,6 +381,9 @@ recogniser that is switched on has to show there what it adds and what it costs.
    PseudonyMed is part of this repository's history; PseudonyMed's change to an adapter and the move of the
    bench are still to come.*
 2. **0.2** The annotation document; the two windows; the place for a library's rules.
+   *Built in 0.2.0: the annotation document (`lexcor.annotation`, `lexcor tag FILE --annotation FILE`) and
+   properties of a concept in packages and in the store. Still to come: the windows and the place for a
+   library's rules.*
 3. **0.3** The interface for recognisers that are switched on, and the first of them: retrieval by meaning as a
    source of proposals in the review window (section 4.7); the search for similar terms; UIMA CAS.
 4. **0.4** Client of a terminology server.

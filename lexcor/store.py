@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS term (
     kind       TEXT NOT NULL DEFAULT 'synonym',
     PRIMARY KEY (concept, value, language)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS property (
+    concept INTEGER NOT NULL REFERENCES concept(id) ON DELETE CASCADE,
+    name    TEXT NOT NULL,
+    value   TEXT NOT NULL,
+    PRIMARY KEY (concept, name)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS overlay (
     url      TEXT NOT NULL,
     code     TEXT NOT NULL,
@@ -220,10 +226,14 @@ class Store:
                 (number, concept.code, concept.display, concept.cls, concept.parent))
             if not cursor.rowcount:
                 continue
+            row = cursor.lastrowid
             cursor.executemany(
                 "INSERT OR IGNORE INTO term (concept, value, language, kind)"
                 " VALUES (?, ?, ?, ?)",
-                [(cursor.lastrowid, t.value, t.language, t.kind) for t in concept.terms])
+                [(row, t.value, t.language, t.kind) for t in concept.terms])
+            cursor.executemany(
+                "INSERT INTO property (concept, name, value) VALUES (?, ?, ?)",
+                [(row, k, v) for k, v in concept.properties.items()])
         self._changed()
         return self.info(package.url)
 
@@ -305,9 +315,30 @@ class Store:
                 "SELECT t.concept, t.value, t.language, t.kind FROM term t"
                 " JOIN concept c ON c.id = t.concept WHERE c.package = ?", (row[0],)):
             concepts[number].terms.append(Term(value, language, kind))
+        if self._has_properties():
+            for number, name, value in self.connection.execute(
+                    "SELECT y.concept, y.name, y.value FROM property y"
+                    " JOIN concept c ON c.id = y.concept WHERE c.package = ?", (row[0],)):
+                concepts[number].properties[name] = value
         return tidy(Package(url=row[1], version=row[2], name=row[3], title=row[4],
                             publisher=row[5], copyright=row[6], language=row[7],
                             redistributable=bool(row[8]), concepts=list(concepts.values())))
+
+    def _has_properties(self) -> bool:
+        """A store written before concepts had properties, and opened for reading only, has
+        no table for them."""
+        return self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'property'"
+        ).fetchone() is not None
+
+    def properties(self, url: str, code: str) -> dict[str, str]:
+        """What else a package says of one concept, by name."""
+        if not self._has_properties():
+            return {}
+        return dict(self.connection.execute(
+            "SELECT y.name, y.value FROM property y JOIN concept c ON c.id = y.concept"
+            " JOIN package p ON p.id = c.package WHERE p.url = ? AND c.code = ?"
+            " ORDER BY y.name", (url, code)).fetchall())
 
     # -- what recognition reads --------------------------------------------------------------------
     def entries(self, packages: Iterable[str] | None = None,

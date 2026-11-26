@@ -207,3 +207,19 @@ def test_an_error_has_a_kind_and_both_wordings(store: Store) -> None:
     assert error.kind == "no-package"
     assert error.message("de").startswith("Kein Paket") and error.message("en").startswith("No ")
     assert str(error) in (error.message("de"), error.message("en"))
+
+
+def test_the_store_keeps_the_properties_of_a_concept(tmp_path: Path) -> None:
+    package = Package(url=URL, concepts=[
+        Concept("H1", "Waldklinik", "hospital", "", [], {"town": "Tannengrund", "beds": "120"}),
+        Concept("H2", "Seeklinik", "hospital")])
+    with open_store(tmp_path / "terms.sqlite") as store:
+        store.add_package(package)
+        assert store.properties(URL, "H1") == {"beds": "120", "town": "Tannengrund"}
+        assert store.properties(URL, "H2") == {} and store.properties(URL, "none") == {}
+        assert store.package(URL) == tidy(package)
+        store.connection.execute("DROP TABLE property")  # a store of before, read only
+        store.connection.commit()
+    with open_store(tmp_path / "terms.sqlite", readonly=True) as old:
+        assert old.properties(URL, "H1") == {}
+        assert [c.display for c in old.package(URL).concepts] == ["Waldklinik", "Seeklinik"]

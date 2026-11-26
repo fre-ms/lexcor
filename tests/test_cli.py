@@ -124,3 +124,27 @@ def test_a_library_brings_its_name_its_store_its_spellings_or_its_tagger(
     with pytest.raises(SystemExit):
         main(["--help"], program="lexsample")
     assert "usage: lexsample" in capsys.readouterr().out
+
+
+def test_tagging_writes_the_annotation_document_and_keeps_decisions(
+        files: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from lexcor import load_annotation
+
+    url, target = "https://example.org/list", files / "letter.annotation.json"
+    assert run(files, "packages", "import", str(files / "list.csv"), "--url", url) == 0
+    assert run(files, "tag", str(files / "letter.txt"), "--annotation", str(target)) == 0
+    first = load_annotation(target)
+    assert first.made_with.startswith("lexcor ") and first.settings == {
+        "classes": [], "packages": []}
+    assert [p["url"] for p in first.packages] == [url]
+    assert [(n.id, n.exact, a.code, a.status) for n, a in first.assignments(None)] == [
+        ("m1", "Hypertonien", "D1", "proposed")]
+    first.reject("m1")
+    first.save(target)
+    before = target.read_bytes()
+    assert run(files, "tag", str(files / "letter.txt"), "-o", str(target)) == 0
+    assert target.read_bytes() == before  # the same run again: the same bytes, still rejected
+    assert main(["--store", str(files / "store.sqlite"), "tag", str(files / "letter.txt"),
+                 "-o", str(files / "other.json")], program="lexsample", version="7.1") == 0
+    assert load_annotation(files / "other.json").made_with == "lexsample 7.1"
+    capsys.readouterr()
