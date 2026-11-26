@@ -11,7 +11,7 @@ in four stages with the kinds of match German needs, an annotation document that
 windows for review and for the packages, and the interfaces to a terminology server. lexcor knows nothing
 medical and nothing about persons.
 
-The project is at its first stage (0.1, not released). The [design](docs/design.md) says what is to be built
+The project is at its first stage (0.1). The [design](docs/design.md) says what is to be built
 and in which order. What is here:
 
 - `lexcor.package`: packages as FHIR CodeSystem (R4, JSON) and as CSV;

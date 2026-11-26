@@ -29,7 +29,7 @@ from lexcor.package import read as read_package
 from lexcor.recognise import Assignment, Kind, Mention, Recogniser, recogniser, tag
 from lexcor.store import Change, Entry, PackageInfo, Store, StoreError, open_store
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 __all__ = [
     "Assignment", "Change", "Concept", "Cover", "Entry", "Kind", "Mention", "Package",
