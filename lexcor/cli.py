@@ -4,11 +4,12 @@
 
     lexcor packages list
     lexcor packages import FILE [--url URL] [--version V] [--title T] [--redistributable]
-    lexcor packages export URL FILE [--own-use]
-    lexcor packages remove URL
-    lexcor tag FILE [--package URL]... [--class CLASS]...
+    lexcor packages export PACKAGE FILE [--own-use]
+    lexcor packages remove PACKAGE
+    lexcor tag FILE [--package PACKAGE]... [--class CLASS]...
 
-Names of commands and options are English; what a person reads is German or English
+A package is named by its URL or, where only one is called so, by its title.  Names of
+commands and options are English; what a person reads is German or English
 (``--language``).  With ``--json`` a command prints one JSON document on standard output and
 nothing else.  lexterm and lexident bring these commands under their own names.
 """
@@ -50,7 +51,9 @@ def _parser(program: str) -> argparse.ArgumentParser:
         "ein Paket aufnehmen (FHIR CodeSystem als .json, Liste als .csv oder .txt)",
         "take a package in (FHIR CodeSystem as .json, a list as .csv or .txt)"))
     add.add_argument("file", type=Path)
-    add.add_argument("--url", default="", help=say("URI einer Liste", "URI of a list"))
+    add.add_argument("--url", default="", help=say(
+        "URI einer Liste (sonst vergibt die Ablage eine eigene)",
+        "URI of a list (else the store gives it one of its own)"))
     add.add_argument("--version", default="", help=say("Version einer Liste", "version of a list"))
     add.add_argument("--title", default="", help=say("Titel einer Liste", "title of a list"))
     add.add_argument("--term-language", default="", help=say(
@@ -59,19 +62,20 @@ def _parser(program: str) -> argparse.ArgumentParser:
         "die Liste darf weitergegeben werden", "the list may be passed on"))
     out = actions.add_parser("export", help=say(
         "ein Paket schreiben (.json oder .csv)", "write a package (.json or .csv)"))
-    out.add_argument("url")
+    out.add_argument("package", help=say("URL oder Titel", "URL or title"))
     out.add_argument("file", type=Path)
     out.add_argument("--own-use", action="store_true", help=say(
         "auch ein Paket schreiben, das nicht weitergegeben werden darf (nur für Sie selbst)",
         "write a package that may not be passed on as well (for yourself only)"))
     gone = actions.add_parser("remove", help=say("ein Paket entfernen", "take a package out"))
-    gone.add_argument("url")
+    gone.add_argument("package", help=say("URL oder Titel", "URL or title"))
 
     find = commands.add_parser("tag", help=say(
         "die Begriffe in einem Text finden", "find the terms in a text"))
     find.add_argument("file", type=Path)
-    find.add_argument("--package", action="append", metavar="URL", help=say(
-        "nur dieses Paket (mehrfach möglich)", "this package only (may be given several times)"))
+    find.add_argument("--package", action="append", metavar="PACKAGE", help=say(
+        "nur dieses Paket, URL oder Titel (mehrfach möglich)",
+        "this package only, URL or title (may be given several times)"))
     find.add_argument("--class", dest="classes", action="append", metavar="CLASS", help=say(
         "nur diese Klasse (mehrfach möglich)", "this class only (may be given several times)"))
     return parser
@@ -105,7 +109,7 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
             f"Taken in: {info.title or info.url} with {info.concepts} concepts in "
             f"{info.terms} wordings.")
     if args.action == "export":
-        chosen = store.package(args.url)
+        chosen = store.package(store.find(args.package))
         if not chosen.redistributable and not args.own_use:
             raise StoreError(say(
                 "Dieses Paket darf nicht weitergegeben werden. Mit --own-use entsteht eine "
@@ -118,16 +122,15 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
             packages.write_codesystem(chosen, args.file)
         return {"file": str(args.file), "url": chosen.url}, say(
             f"Geschrieben: {args.file}", f"Written: {args.file}")
-    removed = store.remove_package(args.url)
-    if not removed:
-        raise StoreError(say(f"Kein Paket mit der URL {args.url}.",
-                             f"No package with the URL {args.url}."))
-    return {"removed": args.url}, say(f"Entfernt: {args.url}", f"Removed: {args.url}")
+    url = store.find(args.package)
+    store.remove_package(url)
+    return {"removed": url}, say(f"Entfernt: {url}", f"Removed: {url}")
 
 
 def _tag(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     text = args.file.read_text(encoding="utf-8")
-    mentions = tag(text, store, args.package, args.classes)
+    chosen = None if args.package is None else [store.find(p) for p in args.package]
+    mentions = tag(text, store, chosen, args.classes)
     lines = [f"{m.start}-{m.end}\t{m.text}\t"
              + "; ".join(f"{a.code} {a.display} ({a.kind.value})" for a in m.assignments)
              for m in mentions]

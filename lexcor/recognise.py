@@ -10,8 +10,9 @@
 The kinds of match (design, section 4.3) are deterministic: the same text and the same
 packages give the same mentions.
 
-- **as written**: upper and lower case do not matter; abbreviations and words of up to
-  three letters match in nothing but their listed spelling.
+- **as written**: upper and lower case do not matter; abbreviations (what a package calls
+  one, and what looks like one) and words of up to three letters match in nothing but their
+  listed spelling.
 - **spelling variant**: umlauts written out or not, ``ß`` and ``ss``, and the pairs a library
   names (lexterm: c with k and z, ph with f).
 - **inflected**: a German inflection ending on a stem of four or more letters, in a term of
@@ -109,9 +110,8 @@ class Recogniser:
             parts = [p for p in _PARTS.split(entry.term.strip()) if p]
             if not parts or len(parts) > MAX_WORDS:
                 continue
-            strict = entry.as_written
-            if strict is None:
-                strict = len(parts) == 1 and only_as_written(parts[0])
+            strict = entry.kind == "abbreviation" or (len(parts) == 1
+                                                      and only_as_written(parts[0]))
             self.terms += 1
             if strict:
                 key = tuple(p.strip(_AROUND) for p in parts)

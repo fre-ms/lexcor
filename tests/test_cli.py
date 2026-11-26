@@ -69,10 +69,27 @@ def test_a_package_that_may_not_be_passed_on_is_exported_for_own_use_only(
     assert (files / "out.csv").read_text(encoding="utf-8").startswith("term,code,display")
 
 
+def test_a_list_without_a_uri_is_named_by_its_title(files: Path,
+                                                    capsys: pytest.CaptureFixture[str]) -> None:
+    assert run(files, "--json", "packages", "import", str(files / "list.csv"),
+               "--redistributable") == 0
+    url = json.loads(capsys.readouterr().out)["package"]["url"]
+    assert url.startswith("urn:uuid:")
+    assert run(files, "--json", "tag", str(files / "letter.txt"), "--package", "list") == 0
+    assert [m["exact"] for m in json.loads(capsys.readouterr().out)["mentions"]] == ["Hypertonien"]
+    assert run(files, "packages", "export", "list", str(files / "out.json")) == 0
+    assert json.loads((files / "out.json").read_text(encoding="utf-8"))["url"] == url
+    assert run(files, "--language", "en", "packages", "remove", "other") == 1
+    assert "No package" in capsys.readouterr().err
+    assert run(files, "--json", "packages", "remove", "list") == 0
+    assert json.loads(capsys.readouterr().out) == {"removed": url}
+
+
 def test_messages_come_in_both_languages(files: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert run(files, "--language", "de", "packages", "list") == 0
     assert capsys.readouterr().out.strip() == "Die Ablage enthält kein Paket."
     assert run(files, "--language", "en", "packages", "list") == 0
     assert capsys.readouterr().out.strip() == "The store holds no package."
     assert run(files, "--language", "en", "--json", "packages", "remove", "urn:x:none") == 1
-    assert json.loads(capsys.readouterr().out) == {"error": "No package with the URL urn:x:none."}
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "No package with the URL or the name urn:x:none."}

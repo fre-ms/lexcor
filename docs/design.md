@@ -52,17 +52,27 @@ which terminologies are published and which every FHIR terminology server reads 
 | licence and source | `copyright`, `publisher` |
 | concept: code and name to show | `concept.code`, `concept.display` |
 | terms of a concept, with their language | `concept.designation` (`value`, `language`) |
-| kind of a term: preferred, synonym, abbreviation | `concept.designation.use` |
+| kind of a term: preferred, synonym, abbreviation | `concept.designation.use`: a further name to show carries HL7's code `display`, a synonym carries none, an abbreviation a code of the core's own |
 | class of a concept | `concept.property` with the code `class` |
 | parent of a concept, where the source has a hierarchy | `concept.property` with the code `parent`, FHIR's own property (`http://hl7.org/fhir/concept-properties#parent`) |
 
-Two things FHIR has no element for are kept in an extension on the CodeSystem: whether the package **may be
-passed on** (`redistributable`), and for a term whether it is matched **only as written** (section 4.3). The
-namespace of these extensions, of the kinds of term and of lists without a URI of their own is provisional
-(`https://lexcor.invalid`, one constant in the code) until a lasting one is chosen (section 11).
+A package is written with FHIR's own elements and codes wherever FHIR has one. **Two things it has none for
+are the core's own:**
 
-A plain list of words is a package too: the code of each concept is the word itself, and the URI is a local
-one. **CSV** is the second form, for lists made by hand: one row per term with the columns `term`, `code`,
+- whether the package **may be passed on**: an extension `redistributable` on the CodeSystem, because FHIR has
+  only the free text of `copyright` for it;
+- the kind of term **abbreviation**: a code for `designation.use`, where FHIR and HL7 offer codes for a name to
+  show and, from SNOMED CT, for a synonym, but none for an abbreviation. An abbreviation is matched only as
+  written (section 4.3), so that no further mark says so.
+
+They belong to the form of a package, which the core reads for both libraries, and so they are the core's and
+not lexterm's. Their namespace is provisional (`https://lexcor.invalid`, one constant in the code) and is
+settled when the first package is passed on (section 11).
+
+A plain list of words is a package too: the code of each concept is the word itself. A list without a URI of
+its own gets one from the store that takes it in (`urn:uuid:…`, the same for the same name, so that a list read
+again replaces itself). That URI belongs to whoever keeps the store, not to this library; in the commands such
+a list is named by its title. **CSV** is the second form, for lists made by hand: one row per term with the columns `term`, `code`,
 `display`, `class`, `kind`, `language`; only `term` is required. Comma-separated, UTF-8.
 
 ### 3.2 Three kinds of package
@@ -123,7 +133,7 @@ Function words come from a small list in the core, per language, not from a lang
 
 | Kind | What it allows | Made by |
 |---|---|---|
-| **as written** | upper and lower case; for abbreviations and words of up to three letters nothing but the listed spelling ("HAT" is a term, "hat" is not) | core |
+| **as written** | upper and lower case; for abbreviations (what a package calls one, and what looks like one) and for words of up to three letters nothing but the listed spelling ("HAT" is a term, "hat" is not) | core |
 | **inflected** | a German inflection ending (`-s`, `-n`, `-en`, `-e`, `-es`, `-er`, `-em`, `-ern`) on a stem of four or more letters; in a term of several words on its last word | core |
 | **spelling variant** | spellings that stand side by side by rule: umlauts written out or not, `ß` and `ss` (core); further pairs a library names (lexterm: c with k and z, ph with f, th with t) | core, with the library's table |
 | **approximate** | a similarity of letters above a threshold | only on request, section 4.4 |
@@ -361,8 +371,9 @@ lexterm and lexident follow each stage with what is theirs.
    a user's decisions may learn.
 4. **Languages other than German**: the rules of inflection and the function words are per language; only
    German is planned.
-5. **The namespace** of the extensions and of lists without a URI of their own (section 3.1): a domain of the
-   project's own or another lasting URI.
+5. **The namespace** of the two things that are the core's own (section 3.1): it stays with the core and is
+   settled when the first package is passed on (decided on 26 November 2026). Then: a domain of the project's
+   own or another lasting URI.
 6. **Inflected adjectives inside a term** ("chronischer Bronchitis" for "chronische Bronchitis"): the rule
    allows an ending on the last word only. The search by meaning found such places; whether a rule finds them
    without false matches is to be measured on the bench.

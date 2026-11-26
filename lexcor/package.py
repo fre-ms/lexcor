@@ -3,12 +3,14 @@
 """Packages: one terminology or list in one version, with its licence.
 
 A package is exchanged as a **FHIR CodeSystem** (R4, JSON) or, for lists made by hand, as a
-**CSV** file (design, section 3.1).  The two things FHIR has no element for are kept in
-extensions: whether a package may be passed on, and whether a term is matched only as
-written.
+**CSV** file (design, section 3.1).  It is written with FHIR's own elements and codes
+wherever FHIR has one.  Two things it has none for are this library's own: whether a package
+may be passed on (an extension), and the kind of term "abbreviation" (a code), which also
+says that the term is matched only as written.
 
-The namespace of these extensions and of local lists is provisional (``NAMESPACE``): it is
-in one place so that it can be changed before anything is published.
+The namespace of these two is provisional (``NAMESPACE``): it is in one place so that it can
+be changed before a package is passed on.  A list without a URI of its own gets one from the
+store that takes it in, not from this library.
 """
 
 from __future__ import annotations
@@ -16,7 +18,6 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,14 +27,21 @@ from lexcor.language import say
 
 NAMESPACE = "https://lexcor.invalid"
 REDISTRIBUTABLE = f"{NAMESPACE}/StructureDefinition/redistributable"
-ONLY_AS_WRITTEN = f"{NAMESPACE}/StructureDefinition/only-as-written"
-TERM_KINDS = f"{NAMESPACE}/CodeSystem/term-kind"
+TERM_KINDS = f"{NAMESPACE}/CodeSystem/term-kind"  # its one code so far: abbreviation
+# FHIR's and HL7's own: the code for a name to show, the property for a concept's parent
+DESIGNATION_USAGE = "http://terminology.hl7.org/CodeSystem/designation-usage"
+SNOMED = "http://snomed.info/sct"
 PARENT = "http://hl7.org/fhir/concept-properties#parent"  # FHIR's own property, not one of ours
 KINDS = ("preferred", "synonym", "abbreviation")
 CSV_COLUMNS = ("term", "code", "display", "class", "kind", "language")
-# what other publishers write into designation.use (SNOMED CT's fully specified name and synonym)
-_FOREIGN_KINDS = {"900000000000003001": "preferred", "900000000000013009": "synonym",
-                  "display": "preferred"}
+# designation.use as a package is written: a synonym carries none
+_USES = {"preferred": {"system": DESIGNATION_USAGE, "code": "display"},
+         "abbreviation": {"system": TERM_KINDS, "code": "abbreviation"}}
+# and as packages are read, with SNOMED CT's fully specified name and synonym
+_KINDS_READ = {(DESIGNATION_USAGE, "display"): "preferred",
+               (TERM_KINDS, "abbreviation"): "abbreviation",
+               (SNOMED, "900000000000003001"): "preferred",
+               (SNOMED, "900000000000013009"): "synonym"}
 
 
 class PackageError(ValueError):
@@ -42,14 +50,12 @@ class PackageError(ValueError):
 
 @dataclass(frozen=True)
 class Term:
-    """One wording of a concept as it may stand in a text.  ``as_written`` forces (True) or
-    lifts (False) the rule that short words and abbreviations match only in their own
-    spelling; None leaves it to the rule."""
+    """One wording of a concept as it may stand in a text.  Its kind is ``preferred``,
+    ``synonym`` or ``abbreviation``; an abbreviation is matched only as it is written."""
 
     value: str
     language: str = ""
     kind: str = "synonym"
-    as_written: bool | None = None
 
 
 @dataclass
@@ -88,12 +94,6 @@ class Package:
         return sum(len(c.terms) for c in self.concepts)
 
 
-def local_url(name: str) -> str:
-    """The URI of a list that has none of its own."""
-    slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-") or "list"
-    return f"{NAMESPACE}/list/{slug}"
-
-
 def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
 
@@ -106,12 +106,11 @@ def tidy_concept(concept: Concept, language: str = "") -> Concept:
         value = _clean(term.value)
         key = (value, term.language or language)
         if value and key not in terms:
-            terms[key] = Term(value, key[1], term.kind if term.kind in KINDS else "synonym",
-                              term.as_written)
+            terms[key] = Term(value, key[1], term.kind if term.kind in KINDS else "synonym")
     display = _clean(concept.display) or (next(iter(terms))[0] if terms else concept.code)
     named = next((key for key in terms if key[0] == display), (display, language))
-    known = terms.pop(named, None)
-    name = Term(display, named[1], "preferred", known.as_written if known else None)
+    terms.pop(named, None)
+    name = Term(display, named[1], "preferred")
     others = sorted(terms.values(), key=lambda t: (t.kind != "preferred", t.value, t.language))
     return Concept(concept.code, display, concept.cls, concept.parent, [name, *others])
 
@@ -132,16 +131,13 @@ def to_codesystem(package: Package) -> dict[str, Any]:
         entry: dict[str, Any] = {"code": concept.code, "display": concept.display}
         designations = []
         for term in concept.terms:
-            if term.value == concept.display and term.language in ("", package.language) \
-                    and term.as_written is None:
+            if term.value == concept.display and term.language in ("", package.language):
                 continue
             designation: dict[str, Any] = {}
-            if term.as_written is not None:
-                designation["extension"] = [{"url": ONLY_AS_WRITTEN,
-                                             "valueBoolean": term.as_written}]
             if term.language:
                 designation["language"] = term.language
-            designation["use"] = {"system": TERM_KINDS, "code": term.kind}
+            if term.kind in _USES:
+                designation["use"] = dict(_USES[term.kind])
             designation["value"] = term.value
             designations.append(designation)
         if designations:
@@ -193,12 +189,9 @@ def _concepts(entries: Iterable[dict[str, Any]], language: str, parent: str = ""
         terms = []
         for designation in entry.get("designation", []):
             use = designation.get("use") or {}
-            kind = use.get("code") if use.get("system") == TERM_KINDS else \
-                _FOREIGN_KINDS.get(str(use.get("code")), "synonym")
+            kind = _KINDS_READ.get((str(use.get("system")), str(use.get("code"))), "synonym")
             terms.append(Term(_clean(designation.get("value")),
-                              _clean(designation.get("language")),
-                              kind if kind in KINDS else "synonym",
-                              _extension(designation, ONLY_AS_WRITTEN)))
+                              _clean(designation.get("language")), kind))
         yield Concept(code, _clean(entry.get("display")), _property(entry, "class"),
                       _property(entry, "parent") or parent, terms)
         yield from _concepts(entry.get("concept", []), language, code)
@@ -238,6 +231,10 @@ def read_codesystem(path: Path) -> Package:
 
 def write_codesystem(package: Package, path: Path) -> None:
     """Write a package as a FHIR CodeSystem file (JSON, UTF-8)."""
+    if not package.url:
+        raise PackageError(say(
+            "Dem Paket fehlt die URI. Eine Liste bekommt sie von der Ablage, die sie aufnimmt.",
+            "The package has no URI. A list gets one from the store that takes it in."))
     Path(path).write_text(json.dumps(to_codesystem(package), ensure_ascii=False, indent=1) + "\n",
                           encoding="utf-8")
 
@@ -248,7 +245,8 @@ def read_csv(path: Path, url: str = "", version: str = "", title: str = "",
     """Read a list made by hand: one row per term with the columns ``term``, ``code``,
     ``display``, ``class``, ``kind``, ``language``, of which only ``term`` is needed.  Rows
     without a code are concepts of their own, the term being the code.  A file without the
-    header line is a plain list of terms."""
+    header line is a plain list of terms.  Without ``url`` the package has none until a
+    store takes it in."""
     path = Path(path)
     with path.open(encoding="utf-8-sig", newline="") as file:
         lines = [line for line in file if line.strip() and not line.startswith("#")]
@@ -271,7 +269,7 @@ def read_csv(path: Path, url: str = "", version: str = "", title: str = "",
         concept.terms.append(Term(value, _clean(record.get("language")) or language,
                                   kind if kind in KINDS else "synonym"))
     name = title or path.name.split(".")[0]
-    return tidy(Package(url=url or local_url(name), version=version, name=name, title=name,
+    return tidy(Package(url=url, version=version, name=name, title=name,
                         language=language, redistributable=redistributable,
                         concepts=list(concepts.values())))
 

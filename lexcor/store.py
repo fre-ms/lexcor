@@ -16,6 +16,7 @@ import json
 import os
 import sqlite3
 import sys
+import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -51,7 +52,6 @@ CREATE TABLE IF NOT EXISTS term (
     value      TEXT NOT NULL,
     language   TEXT NOT NULL DEFAULT '',
     kind       TEXT NOT NULL DEFAULT 'synonym',
-    as_written INTEGER,
     PRIMARY KEY (concept, value, language)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS overlay (
@@ -96,7 +96,6 @@ class Entry:
     """One term as recognition sees it: its wording, and the concept it stands for."""
 
     term: str
-    as_written: bool | None
     system: str
     version: str
     code: str
@@ -172,10 +171,9 @@ class Store:
     # -- packages ----------------------------------------------------------------------------------
     def add_package(self, package: Package) -> PackageInfo:
         """Take a package in.  One with the same URL is replaced, whatever its version; the
-        overlay of that URL stays in force."""
-        if not package.url:
-            raise StoreError(say("Einem Paket fehlt die URL.", "A package has no URL."))
+        overlay of that URL stays in force.  A list without a URL gets one of this store's."""
         package = tidy(package)
+        package.url = package.url or self.local_url(package.name or package.title)
         cursor = self.connection.cursor()
         cursor.execute("DELETE FROM package WHERE url = ?", (package.url,))
         cursor.execute(
@@ -193,12 +191,44 @@ class Store:
             if not cursor.rowcount:
                 continue
             cursor.executemany(
-                "INSERT OR IGNORE INTO term (concept, value, language, kind, as_written)"
-                " VALUES (?, ?, ?, ?, ?)",
-                [(cursor.lastrowid, t.value, t.language, t.kind,
-                  None if t.as_written is None else int(t.as_written)) for t in concept.terms])
+                "INSERT OR IGNORE INTO term (concept, value, language, kind)"
+                " VALUES (?, ?, ?, ?)",
+                [(cursor.lastrowid, t.value, t.language, t.kind) for t in concept.terms])
         self._changed()
         return self.info(package.url)
+
+    def local_url(self, name: str) -> str:
+        """The URI of a list that has none of its own.  It is this store's, so it belongs to
+        whoever keeps the store and not to this library, and it is the same for the same
+        name, so that a list read again replaces itself."""
+        words = " ".join(name.casefold().split())
+        if not words:
+            raise StoreError(say("Einem Paket fehlen URL und Name.",
+                                 "A package has neither a URL nor a name."))
+        row = self.connection.execute("SELECT value FROM meta WHERE key = 'owner'").fetchone()
+        if row is None:
+            row = (str(uuid.uuid4()),)
+            self.connection.execute("INSERT INTO meta (key, value) VALUES ('owner', ?)", row)
+            self.connection.commit()
+        return f"urn:uuid:{uuid.uuid5(uuid.UUID(row[0]), words)}"
+
+    def find(self, given: str) -> str:
+        """The URL of the package a person means: its URL, or its title or name where only
+        one package is called so."""
+        rows = self.connection.execute("SELECT url, title, name FROM package").fetchall()
+        if any(url == given for url, _title, _name in rows):
+            return given
+        wanted = given.casefold()
+        found = sorted(url for url, title, name in rows
+                       if wanted in (title.casefold(), name.casefold()))
+        if len(found) == 1:
+            return str(found[0])
+        if found:
+            raise StoreError(say(
+                f"Mehrere Pakete heißen {given}; bitte die URL angeben: {', '.join(found)}",
+                f"Several packages are called {given}; please give the URL: {', '.join(found)}"))
+        raise StoreError(say(f"Kein Paket mit der URL oder dem Namen {given}.",
+                             f"No package with the URL or the name {given}."))
 
     def remove_package(self, url: str) -> bool:
         """Take a package out; its overlay stays, for the day the package comes back."""
@@ -237,11 +267,10 @@ class Store:
                 "SELECT id, code, display, class, parent FROM concept WHERE package = ?"
                 " ORDER BY code", (row[0],)):
             concepts[number] = Concept(code, display, cls, parent)
-        for number, value, language, kind, as_written in self.connection.execute(
-                "SELECT t.concept, t.value, t.language, t.kind, t.as_written FROM term t"
+        for number, value, language, kind in self.connection.execute(
+                "SELECT t.concept, t.value, t.language, t.kind FROM term t"
                 " JOIN concept c ON c.id = t.concept WHERE c.package = ?", (row[0],)):
-            concepts[number].terms.append(
-                Term(value, language, kind, None if as_written is None else bool(as_written)))
+            concepts[number].terms.append(Term(value, language, kind))
         return tidy(Package(url=row[1], version=row[2], name=row[3], title=row[4],
                             publisher=row[5], copyright=row[6], language=row[7],
                             redistributable=bool(row[8]), concepts=list(concepts.values())))
@@ -269,11 +298,11 @@ class Store:
             else:
                 moved[(url, code)] = value
         rows = self.connection.execute(
-            "SELECT p.url, p.version, c.code, c.display, c.class, t.value, t.language, t.kind,"
-            " t.as_written FROM term t JOIN concept c ON c.id = t.concept"
+            "SELECT p.url, p.version, c.code, c.display, c.class, t.value, t.language, t.kind"
+            " FROM term t JOIN concept c ON c.id = t.concept"
             " JOIN package p ON p.id = c.package ORDER BY p.url, c.code, t.value, t.language")
         seen: set[tuple[str, str]] = set()
-        for url, version, code, display, cls, value, language, kind, as_written in rows:
+        for url, version, code, display, cls, value, language, kind in rows:
             if wanted is not None and url not in wanted:
                 continue
             cls = moved.get((url, code), cls)
@@ -283,14 +312,13 @@ class Store:
                 seen.add((url, code))
                 for extra, extra_language, extra_kind in added.get((url, code), []):
                     if spoken is None or extra_language in spoken:
-                        yield Entry(extra, None, url, version, code, display, cls,
+                        yield Entry(extra, url, version, code, display, cls,
                                     extra_language, extra_kind or "synonym")
             if (url, code, value, language) in hidden or (url, code, value, "") in hidden:
                 continue
             if spoken is not None and language not in spoken:
                 continue
-            yield Entry(value, None if as_written is None else bool(as_written), url, version,
-                        code, display, cls, language, kind)
+            yield Entry(value, url, version, code, display, cls, language, kind)
 
     # -- overlay -----------------------------------------------------------------------------------
     def _known(self, url: str, code: str) -> None:

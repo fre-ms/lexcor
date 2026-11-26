@@ -108,3 +108,24 @@ def test_the_store_of_a_library_lies_in_the_data_folder(tmp_path: Path,
     monkeypatch.setenv("LEXCOR_DATA", str(tmp_path / "data"))
     with open_store(library="lexterm") as opened:
         assert opened.path == tmp_path / "data" / "lexterm.sqlite" and opened.path.exists()
+
+
+def test_a_list_without_a_uri_gets_one_of_the_store(tmp_path: Path) -> None:
+    def words(*values: str) -> Package:
+        return Package(url="", name="Eigene Liste", title="Eigene Liste",
+                       concepts=[Concept(v, v) for v in values])
+
+    with open_store(tmp_path / "one.sqlite") as one, open_store(tmp_path / "two.sqlite") as two:
+        first = one.add_package(words("Ramipril"))
+        assert first.url.startswith("urn:uuid:") and "lexcor" not in first.url
+        again = one.add_package(words("Ramipril", "Bisoprolol"))  # read again: replaces itself
+        assert again.url == first.url and [p.concepts for p in one.packages()] == [2]
+        assert two.add_package(words("Ramipril")).url != first.url  # another keeper, another URI
+        assert one.find("eigene liste") == one.find(first.url) == first.url
+        with pytest.raises(StoreError):
+            one.find("Fremde Liste")
+        one.add_package(Package(url="urn:x:other", title="Eigene Liste"))
+        with pytest.raises(StoreError):  # two packages of one name: the URL decides
+            one.find("Eigene Liste")
+        with pytest.raises(StoreError):
+            one.add_package(Package(url=""))

@@ -14,7 +14,7 @@ LEXTERM = (("ph", "f"), ("th", "t"), ("ce", "ze"), ("ci", "zi"), ("c", "k"))
 
 def entries(*terms: str | tuple[str, str]) -> list[Entry]:
     pairs = [(t, t) if isinstance(t, str) else t for t in terms]
-    return [Entry(term, None, "urn:test", "1", code, code, "", "de", "synonym")
+    return [Entry(term, "urn:test", "1", code, code, "", "de", "synonym")
             for term, code in pairs]
 
 
@@ -62,6 +62,14 @@ def test_umlauts_written_out_and_a_library_table_are_spelling_variants() -> None
         ("Haematurie", "Hämaturie", "spelling variant"),
         ("Colitis", "Kolitis", "spelling variant"),
         ("Hepatische Encephalopathien", "hepatische Enzephalopathie", "inflected")]
+
+
+def test_what_a_package_calls_an_abbreviation_is_matched_only_as_written() -> None:
+    plain = Entry("Krea", "urn:test", "1", "K", "Kreatinin", "", "de", "synonym")
+    short = Entry("Krea", "urn:test", "1", "K", "Kreatinin", "", "de", "abbreviation")
+    text = "Krea normal, krea und Kreas nicht."
+    assert [m.text for m in Recogniser([plain]).tag(text)] == ["Krea", "krea", "Kreas"]
+    assert [m.text for m in Recogniser([short]).tag(text)] == ["Krea"]
 
 
 def test_a_better_kind_shuts_out_a_worse_one_for_the_same_words() -> None:
