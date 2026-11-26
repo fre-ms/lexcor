@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lexcor import Concept, Entry, Kind, Package, Recogniser, Term, open_store, tag
+from lexcor import Concept, Entry, Kind, Mention, Package, Recogniser, Term, open_store, tag
 from lexcor.words import only_as_written, runs, split
 
 LEXTERM = (("ph", "f"), ("th", "t"), ("ce", "ze"), ("ci", "zi"), ("c", "k"))
@@ -130,3 +130,62 @@ def test_terms_of_another_language_can_be_left_out(tmp_path: Path) -> None:
         text = "Es geht ihr gut, Darm und Intestinum unauffällig."
         assert [m.text for m in tag(text, store)] == ["gut", "Darm", "Intestinum"]
         assert [m.text for m in tag(text, store, terms=["de", "la"])] == ["Darm", "Intestinum"]
+
+
+def test_every_package_answers_for_itself() -> None:
+    """One wording is coded in every code system that knows it, each by its own kind of match."""
+    def entry(term: str, system: str, code: str) -> Entry:
+        return Entry(term, system, "1", code, term, "disorder", "de", "synonym")
+
+    recogniser = Recogniser([entry("Hypertonie", "urn:icd", "I10"),
+                             entry("Hypertonie", "urn:sct", "38341003"),
+                             entry("Hypertonien", "urn:own", "H"),
+                             entry("Hipertonie", "urn:var", "V"),
+                             entry("Hypertoni", "urn:odd", "X")], (("y", "i"),))
+    mention, = recogniser.tag("Bekannte Hypertonien.")
+    assert [(a.system, a.code, a.kind.value) for a in mention.assignments] == [
+        ("urn:icd", "I10", "inflected"), ("urn:odd", "X", "inflected"),
+        ("urn:own", "H", "as written"), ("urn:sct", "38341003", "inflected"),
+        ("urn:var", "V", "inflected")]
+    mention, = recogniser.tag("Bekannte Hypertonie.")
+    assert [(a.system, a.kind.value) for a in mention.assignments] == [
+        ("urn:icd", "as written"), ("urn:odd", "inflected"), ("urn:sct", "as written"),
+        ("urn:var", "spelling variant")]
+    # within one package the better kind still shuts out the worse
+    one = Recogniser([entry("Masern", "urn:one", "B05"), entry("Maser", "urn:one", "Q"),
+                      entry("Maser", "urn:two", "Q")])
+    mention, = one.tag("Masern")
+    assert [(a.system, a.code) for a in mention.assignments] == [("urn:one", "B05"),
+                                                                 ("urn:two", "Q")]
+
+
+def test_a_package_that_knows_only_a_shorter_wording_still_codes_it() -> None:
+    """Overlaps are settled inside each package, never between packages."""
+    def entry(term: str, system: str, code: str) -> Entry:
+        return Entry(term, system, "1", code, term, "", "de", "synonym")
+
+    recogniser = Recogniser([entry("Morbus Parkinson", "urn:icd", "G20"),
+                             entry("Parkinson", "urn:icd", "G20-short"),
+                             entry("Parkinson", "urn:eponyms", "P1"),
+                             entry("Morbus", "urn:words", "W1"),
+                             entry("Morbus Parkinson", "urn:sct", "49049000")])
+    text = "Bekannter Morbus Parkinson."
+
+    def shown(mentions: list[Mention]) -> list[tuple[str, list[tuple[str, str]]]]:
+        return [(m.text, [(a.system, a.code) for a in m.assignments]) for m in mentions]
+
+    assert shown(recogniser.tag(text)) == [
+        ("Morbus", [("urn:words", "W1")]),
+        ("Morbus Parkinson", [("urn:icd", "G20"), ("urn:sct", "49049000")]),
+        ("Parkinson", [("urn:eponyms", "P1")])]  # not urn:icd: it has the longer wording
+    assert shown(recogniser.tag(text, nested=True)) == [
+        ("Morbus", [("urn:words", "W1")]),
+        ("Morbus Parkinson", [("urn:icd", "G20"), ("urn:sct", "49049000")]),
+        ("Parkinson", [("urn:eponyms", "P1"), ("urn:icd", "G20-short")])]
+    alone = Recogniser([entry("Morbus Parkinson", "urn:icd", "G20"),
+                        entry("Parkinson", "urn:icd", "G20-short")])
+    assert shown(alone.tag(text)) == [("Morbus Parkinson", [("urn:icd", "G20")])]
+    crossing = Recogniser([entry("arterielle Hypertonie", "urn:a", "A"),
+                           entry("Hypertonie Grad 2", "urn:b", "B")])
+    assert shown(crossing.tag("arterielle Hypertonie Grad 2")) == [
+        ("arterielle Hypertonie", [("urn:a", "A")]), ("Hypertonie Grad 2", [("urn:b", "B")])]

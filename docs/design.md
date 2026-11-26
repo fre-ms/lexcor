@@ -110,8 +110,11 @@ Recognition is four stages, each of which can be exchanged (the build of QuickUM
 2. **Candidates**: for each run, the terms of the packages that it may spell.
 3. **Checking**: each candidate is checked and given the kind of its match; rules of a library (section 4.5)
    may accept, reject or mark it.
-4. **Resolution**: of candidates that overlap, a match by rule wins over an approximate one, then the longer
-   run, then the better kind of match.
+4. **Resolution**: of a package's candidates that overlap, a match by rule wins over an approximate one, then
+   the longer run, then the better kind of match. Packages do not shut each other out: a run is a mention
+   where at least one package keeps it. A package that knows only "Parkinson" codes it inside "Morbus
+   Parkinson", the mention of another package, so mentions of different packages may overlap. A package's own
+   shorter terms inside its longer ones are given on request (`nested`).
 
 ### 4.2 Runs of words
 
@@ -145,9 +148,15 @@ names in the dictionary they tagged "gut", "fast" and "Berlin" in German letters
 trial, section 7.4).
 
 Every assignment says of which kind its match is, and an approximate one how similar. The first three kinds
-give the same result on every run and make assignments. For the same words a better kind shuts out a worse one,
-in the order as written, spelling variant, inflected: where "Masern" is listed, "Maser" is not assigned to it by
-its stem. On the trial's test set these rules linked 89 % of the places and tagged nothing they should not,
+give the same result on every run and make assignments. Within one package a better kind shuts out a worse one
+for the same words, in the order as written, spelling variant, inflected: where "Masern" is listed, "Maser" of
+the same package is not assigned to it by its stem.
+
+**Every package answers for itself.** One wording is coded in every code system that knows it: a mention
+carries an assignment from each package that lists its words, each with the kind of its own match. A package
+that lists "Hypertonien" as written does not keep the packages that list "Hypertonie" from assigning their
+codes to the same place. Nothing chooses between packages or between classes; that is a person's decision in
+the review, and what a FHIR CodeableConcept is for: one concept in the text, a coding from every system. On the trial's test set these rules linked 89 % of the places and tagged nothing they should not,
 where every plain dictionary matcher linked 64 %.
 
 ### 4.4 Approximate matching: for people, not for assignments

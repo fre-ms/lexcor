@@ -118,7 +118,8 @@ def test_a_library_brings_its_name_its_store_its_spellings_or_its_tagger(
     assert (mention["exact"], mention["assignments"][0]["match"]) == (
         "Kolitis", {"kind": "spelling variant"})
     assert main(["--json", "tag", str(files / "k.txt")], library="lexsample",
-                tagger=lambda text, store, packages, classes: [Mention(0, 8, text[:8], ())]) == 0
+                tagger=lambda text, store, packages, classes, nested: [
+                    Mention(0, 8, text[:8], ())]) == 0
     assert json.loads(capsys.readouterr().out)["mentions"] == [
         {"start": 0, "end": 8, "exact": "Bekannte", "assignments": []}]
     with pytest.raises(SystemExit):
@@ -135,7 +136,7 @@ def test_tagging_writes_the_annotation_document_and_keeps_decisions(
     assert run(files, "tag", str(files / "letter.txt"), "--annotation", str(target)) == 0
     first = load_annotation(target)
     assert first.made_with.startswith("lexcor ") and first.settings == {
-        "classes": [], "packages": []}
+        "classes": [], "nested": False, "packages": []}
     assert [p["url"] for p in first.packages] == [url]
     assert [(n.id, n.exact, a.code, a.status) for n, a in first.assignments(None)] == [
         ("m1", "Hypertonien", "D1", "proposed")]

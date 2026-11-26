@@ -6,7 +6,7 @@
     lexcor packages import FILE [--url URL] [--version V] [--title T] [--redistributable]
     lexcor packages export PACKAGE FILE [--own-use]
     lexcor packages remove PACKAGE
-    lexcor tag FILE [--package PACKAGE]... [--class CLASS]... [--annotation FILE]
+    lexcor tag FILE [--package PACKAGE]... [--class CLASS]... [--nested] [--annotation FILE]
 
 A package is named by its URL or, where only one is called so, by its title.  Names of
 commands and options are English; what a person reads is German or English
@@ -31,8 +31,9 @@ from lexcor.language import LANGUAGES, LexError, say, set_language
 from lexcor.recognise import Mention, Variants, tag
 from lexcor.store import Store, StoreError, open_store
 
-# what a library hands over to recognise by rules of its own: text, store, packages, classes
-Tagger = Callable[[str, Store, Iterable[str] | None, Iterable[str] | None], list[Mention]]
+# what a library hands over to recognise by rules of its own: text, store, packages, classes,
+# and whether a package's shorter terms inside its longer ones are wanted
+Tagger = Callable[[str, Store, Iterable[str] | None, Iterable[str] | None, bool], list[Mention]]
 
 
 def _parser(program: str) -> argparse.ArgumentParser:
@@ -83,6 +84,9 @@ def _parser(program: str) -> argparse.ArgumentParser:
         "this package only, URL or title (may be given several times)"))
     find.add_argument("--class", dest="classes", action="append", metavar="CLASS", help=say(
         "nur diese Klasse (mehrfach möglich)", "this class only (may be given several times)"))
+    find.add_argument("--nested", action="store_true", help=say(
+        "auch die kürzeren Begriffe eines Pakets innerhalb seiner längeren",
+        "a package's shorter terms inside its longer ones as well"))
     find.add_argument("--annotation", "-o", type=Path, metavar="FILE", help=say(
         "das Annotationsdokument schreiben; ein vorhandenes wird fortgeschrieben, was ein"
         " Mensch entschieden hat, bleibt",
@@ -142,11 +146,12 @@ def _tag(store: Store, args: argparse.Namespace, tagger: Tagger,
          made_with: str) -> tuple[dict[str, Any], str]:
     text = args.file.read_text(encoding="utf-8")
     chosen = None if args.package is None else [store.find(p) for p in args.package]
-    mentions = tagger(text, store, chosen, args.classes)
+    mentions = tagger(text, store, chosen, args.classes, args.nested)
     if args.annotation is not None:
         document = load(args.annotation) if args.annotation.exists() else Annotation()
         document.update(text, mentions, made_with, made_with, packages_of(store, chosen),
-                        {"packages": sorted(chosen or []), "classes": sorted(args.classes or [])})
+                        {"packages": sorted(chosen or []), "classes": sorted(args.classes or []),
+                         "nested": args.nested})
         document.save(args.annotation)
     lines = [f"{m.start}-{m.end}\t{m.text}\t"
              + "; ".join(f"{a.code} {a.display} ({a.kind.value})" for a in m.assignments)
@@ -167,8 +172,8 @@ def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
     made_with = f"{program} {version or __version__}"
     if tagger is None:
         def tagger(text: str, store: Store, packages: Iterable[str] | None,
-                   classes: Iterable[str] | None) -> list[Mention]:
-            return tag(text, store, packages, classes, variants)
+                   classes: Iterable[str] | None, nested: bool) -> list[Mention]:
+            return tag(text, store, packages, classes, variants, nested=nested)
     given = list(sys.argv[1:] if arguments is None else arguments)
     for i, word in enumerate(given[:-1]):  # the language also rules the help texts
         if word == "--language" and given[i + 1] in LANGUAGES:
