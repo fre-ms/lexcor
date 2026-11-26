@@ -38,7 +38,7 @@ The matcher, the vocabulary and the lexicon were written in PseudonyMed. Their h
 repository's history: `git log -- legacy/` shows it. The bench, the prototype the matcher grew out of and the
 reports on what exists already are in lexterm's repository for now.
 
-`lexcor` is a working name; the name search is in lexterm's repository.
+lexterm and lexident are not public yet. `lexcor` is a working name.
 
 ## Licence
 
