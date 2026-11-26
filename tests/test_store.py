@@ -8,7 +8,20 @@ from pathlib import Path
 
 import pytest
 
-from lexcor import Change, Concept, Package, Store, StoreError, Term, open_store, tidy
+from lexcor import (
+    Change,
+    Concept,
+    Package,
+    Recogniser,
+    Store,
+    StoreError,
+    Term,
+    cover,
+    entries_of,
+    open_store,
+    recogniser,
+    tidy,
+)
 
 URL = "https://example.org/CodeSystem/sample"
 
@@ -129,3 +142,68 @@ def test_a_list_without_a_uri_gets_one_of_the_store(tmp_path: Path) -> None:
             one.find("Eigene Liste")
         with pytest.raises(StoreError):
             one.add_package(Package(url=""))
+
+
+def test_a_store_opened_for_reading_writes_nothing(tmp_path: Path) -> None:
+    file = tmp_path / "inside a program" / "terms.sqlite"
+    with open_store(file) as written:
+        written.add_package(sample())
+    before = sorted(p.name for p in file.parent.iterdir())
+    with open_store(file, readonly=True) as store:
+        assert [e.term for e in store.entries(classes=["drug"])] == ["Ramipril"]
+        assert store.find("sample") == URL and store.version() == 1
+        assert [m.text for m in recogniser(store).tag("Ramipril und Hypertonie")] == [
+            "Ramipril", "Hypertonie"]
+        for change in (lambda: store.hide(URL, "D1"), lambda: store.add_package(sample("2")),
+                       lambda: store.remove_package(URL),
+                       lambda: store.add_package(Package(url="", name="Liste"))):
+            with pytest.raises(StoreError) as refused:
+                change()
+            assert refused.value.kind == "read-only"
+    assert sorted(p.name for p in file.parent.iterdir()) == before  # no journal, no new file
+    with pytest.raises(StoreError) as missing:
+        open_store(tmp_path / "nowhere" / "terms.sqlite", readonly=True)
+    assert missing.value.kind == "no-store" and not (tmp_path / "nowhere").exists()
+
+
+def test_stores_in_memory_are_kept_apart() -> None:
+    with Store(":memory:") as one, Store(":memory:") as two:
+        one.add_package(sample())
+        two.add_package(Package(url=URL, concepts=[Concept("X", "Bisoprolol")]))
+        assert one.key != two.key and one.version() == two.version()
+        assert recogniser(one).tag("Bisoprolol") == []
+        assert [m.text for m in recogniser(two).tag("Bisoprolol")] == ["Bisoprolol"]
+        assert cover(one).is_term("Ramipril") and not cover(two).is_term("Ramipril")
+    assert not Path(":memory:").exists()
+
+
+def test_a_store_is_opened_in_one_thread_and_used_in_another(tmp_path: Path) -> None:
+    import threading
+
+    found: list[str] = []
+    with open_store(tmp_path / "terms.sqlite") as store:
+        store.add_package(sample())
+        worker = threading.Thread(target=lambda: found.extend(e.term for e in store.entries()))
+        worker.start()
+        worker.join()
+    assert found == ["Bluthochdruck", "Hypertonie", "Ramipril"]
+
+
+def test_packages_are_recognised_without_any_store() -> None:
+    entries = list(entries_of([sample()]))
+    assert [(e.term, e.system, e.version, e.code, e.cls) for e in entries] == [
+        ("Bluthochdruck", URL, "1", "D1", "disorder"), ("Hypertonie", URL, "1", "D1", "disorder"),
+        ("Ramipril", URL, "1", "M1", "drug")]
+    assert [e.term for e in entries_of([sample()], classes=["drug"])] == ["Ramipril"]
+    assert [e.term for e in entries_of([sample()], languages=["en"])] == []
+    mention, = Recogniser(entries).tag("Bekannte Hypertonien.")
+    assert (mention.text, mention.assignments[0].code) == ("Hypertonien", "D1")
+
+
+def test_an_error_has_a_kind_and_both_wordings(store: Store) -> None:
+    with pytest.raises(StoreError) as caught:
+        store.find("Fremdes Paket")
+    error = caught.value
+    assert error.kind == "no-package"
+    assert error.message("de").startswith("Kein Paket") and error.message("en").startswith("No ")
+    assert str(error) in (error.message("de"), error.message("en"))

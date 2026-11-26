@@ -11,7 +11,9 @@
 A package is named by its URL or, where only one is called so, by its title.  Names of
 commands and options are English; what a person reads is German or English
 (``--language``).  With ``--json`` a command prints one JSON document on standard output and
-nothing else.  lexterm and lexident bring these commands under their own names.
+nothing else.  lexterm and lexident bring these commands under their own names: :func:`main`
+takes the program's name, the library whose store is the default, a table of spellings and,
+where a library recognises by rules of its own, its tagger.
 """
 
 from __future__ import annotations
@@ -19,15 +21,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
 from lexcor import package as packages
-from lexcor.language import LANGUAGES, say, set_language
-from lexcor.package import PackageError
-from lexcor.recognise import Mention, tag
+from lexcor.language import LANGUAGES, LexError, say, set_language
+from lexcor.recognise import Mention, Variants, tag
 from lexcor.store import Store, StoreError, open_store
+
+# what a library hands over to recognise by rules of its own: text, store, packages, classes
+Tagger = Callable[[str, Store, Iterable[str] | None, Iterable[str] | None], list[Mention]]
 
 
 def _parser(program: str) -> argparse.ArgumentParser:
@@ -111,11 +115,12 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
     if args.action == "export":
         chosen = store.package(store.find(args.package))
         if not chosen.redistributable and not args.own_use:
-            raise StoreError(say(
+            raise StoreError(
+                "not-redistributable",
                 "Dieses Paket darf nicht weitergegeben werden. Mit --own-use entsteht eine "
                 "Kopie nur für Sie selbst.",
                 "This package may not be passed on. With --own-use a copy for yourself only "
-                "is written."))
+                "is written.")
         if args.file.suffix.lower() == ".csv":
             packages.write_csv(chosen, args.file)
         else:
@@ -127,30 +132,41 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
     return {"removed": url}, say(f"Entfernt: {url}", f"Removed: {url}")
 
 
-def _tag(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+def _tag(store: Store, args: argparse.Namespace, tagger: Tagger) -> tuple[dict[str, Any], str]:
     text = args.file.read_text(encoding="utf-8")
     chosen = None if args.package is None else [store.find(p) for p in args.package]
-    mentions = tag(text, store, chosen, args.classes)
+    mentions = tagger(text, store, chosen, args.classes)
     lines = [f"{m.start}-{m.end}\t{m.text}\t"
              + "; ".join(f"{a.code} {a.display} ({a.kind.value})" for a in m.assignments)
              for m in mentions]
     return {"mentions": [_mention(m) for m in mentions]}, "\n".join(lines)
 
 
-def main(arguments: Sequence[str] | None = None, program: str = "lexcor") -> int:
-    """Run one command; returns the exit code."""
+def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
+         library: str = "lexcor", variants: Variants = (), tagger: Tagger | None = None) -> int:
+    """Run one command; returns the exit code.  A library built on the core calls this with
+    its own name (``program``, and ``library`` for the store it keeps in the user's data
+    folder), its table of spellings that stand side by side (``variants``) or, where it
+    recognises by rules of its own, the function that tags (``tagger``)."""
+    if tagger is None:
+        def tagger(text: str, store: Store, packages: Iterable[str] | None,
+                   classes: Iterable[str] | None) -> list[Mention]:
+            return tag(text, store, packages, classes, variants)
     given = list(sys.argv[1:] if arguments is None else arguments)
     for i, word in enumerate(given[:-1]):  # the language also rules the help texts
         if word == "--language" and given[i + 1] in LANGUAGES:
             set_language(given[i + 1])
     args = _parser(program).parse_args(given)
     try:
-        with open_store(args.store) as store:
+        with open_store(args.store, library) as store:
             document, text = _packages(store, args) if args.command == "packages" \
-                else _tag(store, args)
-    except (PackageError, StoreError, OSError, UnicodeDecodeError) as error:
+                else _tag(store, args, tagger)
+    except (LexError, OSError, UnicodeDecodeError) as error:
+        if not isinstance(error, LexError):  # a file that is not there or not text
+            error = LexError("unreadable", str(error), str(error))
         if args.json:
-            print(json.dumps({"error": str(error)}, ensure_ascii=False))
+            print(json.dumps({"error": error.kind, "message": error.messages},
+                             ensure_ascii=False))
         else:
             print(str(error), file=sys.stderr)
         return 1

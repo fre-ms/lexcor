@@ -39,3 +39,21 @@ def language() -> str:
 def say(german: str, english: str) -> str:
     """The message in the language in force."""
     return german if language() == "de" else english
+
+
+class LexError(ValueError):
+    """Something a person is told about.  ``kind`` is a word a program can tell apart; the
+    message exists in both languages, so that a caller with a language of its own (a
+    program that answers in German and English at once) need not ask this module for it."""
+
+    def __init__(self, kind: str, german: str, english: str) -> None:
+        super().__init__(english)
+        self.kind = kind
+        self.messages = {"de": german, "en": english}
+
+    def message(self, code: str | None = None) -> str:
+        """The message in a language ("de" or "en"), else in the one in force."""
+        return self.messages[code if code in LANGUAGES else language()]
+
+    def __str__(self) -> str:
+        return self.message()

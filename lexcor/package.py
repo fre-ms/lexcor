@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lexcor.language import say
+from lexcor.language import LexError
 
 NAMESPACE = "https://lexcor.invalid"
 REDISTRIBUTABLE = f"{NAMESPACE}/StructureDefinition/redistributable"
@@ -44,7 +44,7 @@ _KINDS_READ = {(DESIGNATION_USAGE, "display"): "preferred",
                (SNOMED, "900000000000013009"): "synonym"}
 
 
-class PackageError(ValueError):
+class PackageError(LexError):
     """A file that is no package this library can read."""
 
 
@@ -200,13 +200,15 @@ def _concepts(entries: Iterable[dict[str, Any]], language: str, parent: str = ""
 def from_codesystem(resource: dict[str, Any]) -> Package:
     """The package a FHIR CodeSystem describes."""
     if resource.get("resourceType") != "CodeSystem":
-        raise PackageError(say("Die Datei ist kein FHIR CodeSystem.",
-                               "The file is not a FHIR CodeSystem."))
+        raise PackageError("not-a-codesystem", "Die Datei ist kein FHIR CodeSystem.",
+                           "The file is not a FHIR CodeSystem.")
     if not resource.get("url"):
-        raise PackageError(say("Dem CodeSystem fehlt die URL.", "The CodeSystem has no URL."))
+        raise PackageError("no-url", "Dem CodeSystem fehlt die URL.",
+                           "The CodeSystem has no URL.")
     if resource.get("content") == "not-present":
-        raise PackageError(say("Das CodeSystem enthält keine Begriffe (content: not-present).",
-                               "The CodeSystem holds no concepts (content: not-present)."))
+        raise PackageError("no-concepts",
+                           "Das CodeSystem enthält keine Begriffe (content: not-present).",
+                           "The CodeSystem holds no concepts (content: not-present).")
     language = _clean(resource.get("language"))
     return tidy(Package(
         url=_clean(resource["url"]), version=_clean(resource.get("version")),
@@ -221,20 +223,21 @@ def read_codesystem(path: Path) -> Package:
     try:
         resource = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise PackageError(say(f"{path} lässt sich nicht als JSON lesen: {error}",
-                               f"{path} cannot be read as JSON: {error}")) from error
+        raise PackageError("unreadable", f"{path} lässt sich nicht als JSON lesen: {error}",
+                           f"{path} cannot be read as JSON: {error}") from error
     if not isinstance(resource, dict):
-        raise PackageError(say("Die Datei ist kein FHIR CodeSystem.",
-                               "The file is not a FHIR CodeSystem."))
+        raise PackageError("not-a-codesystem", "Die Datei ist kein FHIR CodeSystem.",
+                           "The file is not a FHIR CodeSystem.")
     return from_codesystem(resource)
 
 
 def write_codesystem(package: Package, path: Path) -> None:
     """Write a package as a FHIR CodeSystem file (JSON, UTF-8)."""
     if not package.url:
-        raise PackageError(say(
+        raise PackageError(
+            "no-url",
             "Dem Paket fehlt die URI. Eine Liste bekommt sie von der Ablage, die sie aufnimmt.",
-            "The package has no URI. A list gets one from the store that takes it in."))
+            "The package has no URI. A list gets one from the store that takes it in.")
     Path(path).write_text(json.dumps(to_codesystem(package), ensure_ascii=False, indent=1) + "\n",
                           encoding="utf-8")
 
@@ -295,5 +298,6 @@ def read(path: Path, **details: Any) -> Package:
         return read_codesystem(path)
     if path.suffix.lower() in (".csv", ".txt"):
         return read_csv(path, **details)
-    raise PackageError(say(f"Unbekannte Dateiendung: {path.name} (.json, .csv, .txt)",
-                           f"Unknown file ending: {path.name} (.json, .csv, .txt)"))
+    raise PackageError("unknown-ending",
+                       f"Unbekannte Dateiendung: {path.name} (.json, .csv, .txt)",
+                       f"Unknown file ending: {path.name} (.json, .csv, .txt)")

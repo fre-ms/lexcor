@@ -340,6 +340,23 @@ options are English; messages are German or English.
 **Dependencies**: Python's standard library and SQLite. The windows (PySide6), the search for similar terms
 and the UIMA CAS form are extras.
 
+**Inside another program.** The libraries are used by programs that stay in charge of their own files,
+threads and answers: PseudonyMed, medorello, and semdoc, the step of the document tools (docrepro) that finds
+medical terms and identifying information in what was read from a page. For them the core keeps this:
+
+- it uses no network and prints nothing (only the command line prints);
+- it writes nothing but a store the caller opened for writing: a store can be opened for reading only, without
+  a journal beside it (a store inside a packaged program), kept in memory for one run, or left out altogether
+  (`entries_of(packages)` gives recognition what a store would);
+- importing it loads nothing; a recogniser is built on first use and rebuilt only when its store changed;
+- a store may be opened in one thread and used in another, by one thread at a time;
+- places are in code points, and the same input gives the same result in the same order;
+- every error a person is told about has a kind a program can tell apart and its message in both languages,
+  so that a caller can answer in its own form.
+
+What such a program still waits for is the annotation document (section 5) with a person's decisions: semdoc
+stores proposals and decisions and must give its result again without the packages being installed.
+
 ## 9 Bench
 
 Every recogniser is measured the same way, each with the same packages: on a test set whose truth is known by

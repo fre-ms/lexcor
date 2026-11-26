@@ -13,7 +13,7 @@ The common core of lexterm (medical terms) and lexident (identifying information
 """
 
 from lexcor.cover import Cover, cover, covers
-from lexcor.language import say, set_language
+from lexcor.language import LexError, say, set_language
 from lexcor.package import (
     Concept,
     Package,
@@ -27,13 +27,21 @@ from lexcor.package import (
 )
 from lexcor.package import read as read_package
 from lexcor.recognise import Assignment, Kind, Mention, Recogniser, recogniser, tag
-from lexcor.store import Change, Entry, PackageInfo, Store, StoreError, open_store
+from lexcor.store import (
+    Change,
+    Entry,
+    PackageInfo,
+    Store,
+    StoreError,
+    entries_of,
+    open_store,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
-    "Assignment", "Change", "Concept", "Cover", "Entry", "Kind", "Mention", "Package",
-    "PackageError", "PackageInfo", "Recogniser", "Store", "StoreError", "Term", "cover",
-    "covers", "open_store", "read_codesystem", "read_csv", "read_package", "recogniser", "say",
-    "set_language", "tag", "tidy", "write_codesystem", "write_csv",
+    "Assignment", "Change", "Concept", "Cover", "Entry", "Kind", "LexError", "Mention",
+    "Package", "PackageError", "PackageInfo", "Recogniser", "Store", "StoreError", "Term",
+    "cover", "covers", "entries_of", "open_store", "read_codesystem", "read_csv", "read_package",
+    "recogniser", "say", "set_language", "tag", "tidy", "write_codesystem", "write_csv",
 ]

@@ -91,5 +91,36 @@ def test_messages_come_in_both_languages(files: Path, capsys: pytest.CaptureFixt
     assert run(files, "--language", "en", "packages", "list") == 0
     assert capsys.readouterr().out.strip() == "The store holds no package."
     assert run(files, "--language", "en", "--json", "packages", "remove", "urn:x:none") == 1
-    assert json.loads(capsys.readouterr().out) == {
-        "error": "No package with the URL or the name urn:x:none."}
+    assert json.loads(capsys.readouterr().out) == {"error": "no-package", "message": {
+        "de": "Kein Paket mit der URL oder dem Namen urn:x:none.",
+        "en": "No package with the URL or the name urn:x:none."}}
+    assert run(files, "--json", "tag", str(files / "missing.txt")) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == "unreadable"
+
+
+
+def test_a_library_brings_its_name_its_store_its_spellings_or_its_tagger(
+        files: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    from lexcor import Mention
+
+    monkeypatch.setenv("LEXCOR_DATA", str(files / "data"))
+    (files / "c.csv").write_text("term,code\nColitis,K51\n", encoding="utf-8")
+    (files / "k.txt").write_text("Bekannte Kolitis.", encoding="utf-8")
+    assert main(["packages", "import", str(files / "c.csv")], program="lexsample",
+                library="lexsample") == 0
+    assert (files / "data" / "lexsample.sqlite").exists()
+    capsys.readouterr()
+    assert main(["--json", "tag", str(files / "k.txt")], library="lexsample") == 0
+    assert json.loads(capsys.readouterr().out) == {"mentions": []}
+    assert main(["--json", "tag", str(files / "k.txt")], library="lexsample",
+                variants=(("c", "k"),)) == 0
+    mention, = json.loads(capsys.readouterr().out)["mentions"]
+    assert (mention["exact"], mention["assignments"][0]["match"]) == (
+        "Kolitis", {"kind": "spelling variant"})
+    assert main(["--json", "tag", str(files / "k.txt")], library="lexsample",
+                tagger=lambda text, store, packages, classes: [Mention(0, 8, text[:8], ())]) == 0
+    assert json.loads(capsys.readouterr().out)["mentions"] == [
+        {"start": 0, "end": 8, "exact": "Bekannte", "assignments": []}]
+    with pytest.raises(SystemExit):
+        main(["--help"], program="lexsample")
+    assert "usage: lexsample" in capsys.readouterr().out

@@ -34,6 +34,21 @@ with lexcor.open_store("terms.sqlite") as store:
 The core needs nothing but Python (3.12 or later) and its standard library. Tests: `pytest`; checks: `ruff
 check .` and `mypy`.
 
+## Inside another program
+
+lexcor, lexterm and lexident are libraries first: a program that reads documents imports them and stays in
+charge. What they keep for such a program:
+
+- **No network, no output of their own.** Only the command line prints; the library returns values.
+- **Nothing is written but a store a caller opened for writing.** `open_store(path, readonly=True)` opens a
+  store that comes inside a program without leaving a journal beside it; `Store(":memory:")` keeps one for a
+  run; and `entries_of(packages)` with `Recogniser` or `Cover` recognises with packages and no store at all.
+- **The same result for the same input**, with places in code points and assignments in a fixed order.
+- **Importing loads nothing**; a recogniser is built on first use and kept until its store changes.
+- **A store may be opened in one thread and used in another**, by one thread at a time.
+- **Errors can be told apart**: every error a person is told about is a `LexError` with a `kind` (`no-package`,
+  `read-only`, `not-a-codesystem` …) and its message in German and English (`error.messages`).
+
 The matcher, the vocabulary and the lexicon were written in PseudonyMed. Their history there is part of this
 repository's history: `git log -- legacy/` shows it. The bench, the prototype the matcher grew out of and the
 reports on what exists already are in lexterm's repository for now.

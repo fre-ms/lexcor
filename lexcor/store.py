@@ -21,7 +21,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from lexcor.language import say
+from lexcor.language import LexError
 from lexcor.package import KINDS, Concept, Package, Term, tidy
 
 SCHEMA = """
@@ -72,8 +72,8 @@ CREATE TABLE IF NOT EXISTS meta (
 OVERLAY_FORMAT = 1
 
 
-class StoreError(ValueError):
-    """Something the store was asked for that it does not hold."""
+class StoreError(LexError):
+    """Something the store was asked for that it does not hold, or may not do."""
 
 
 @dataclass(frozen=True)
@@ -136,15 +136,43 @@ def _now() -> str:
 
 
 class Store:
-    """The packages of one library and what its user changed in them."""
+    """The packages of one library and what its user changed in them.
 
-    def __init__(self, path: str | Path) -> None:
+    ``readonly`` opens a store that exists without writing anything, not even a journal
+    beside it: for a store that comes inside a program, or in a folder a caller may only
+    read.  ``":memory:"`` as the path keeps the store in memory, for one run.  A store may be
+    opened in one thread and used in another, by one thread at a time."""
+
+    def __init__(self, path: str | Path, readonly: bool = False) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(str(self.path))
+        self.readonly = readonly
+        self.memory = str(path) == ":memory:"
+        try:
+            if readonly:
+                self.connection = sqlite3.connect(
+                    f"{self.path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
+                self.connection.execute("SELECT COUNT(*) FROM package").fetchone()
+                return
+            if not self.memory:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(str(path), check_same_thread=False)
+        except (sqlite3.Error, OSError) as error:
+            raise StoreError("no-store", f"Die Ablage {self.path.name} lässt sich nicht öffnen.",
+                             f"The store {self.path.name} cannot be opened.") from error
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.executescript(SCHEMA)
         self.connection.commit()
+
+    @property
+    def key(self) -> str:
+        """What tells this store from every other in this process: its file, or for a store
+        in memory itself."""
+        return f":memory:{id(self)}" if self.memory else str(self.path.resolve())
+
+    def _writable(self) -> None:
+        if self.readonly:
+            raise StoreError("read-only", "Diese Ablage ist nur zum Lesen geöffnet.",
+                             "This store is open for reading only.")
 
     def close(self) -> None:
         """Close the file."""
@@ -163,6 +191,7 @@ class Store:
         return int(row[0]) if row else 0
 
     def _changed(self) -> None:
+        self._writable()
         self.connection.execute(
             "INSERT INTO meta (key, value) VALUES ('version', '1') ON CONFLICT(key)"
             " DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)")
@@ -172,6 +201,7 @@ class Store:
     def add_package(self, package: Package) -> PackageInfo:
         """Take a package in.  One with the same URL is replaced, whatever its version; the
         overlay of that URL stays in force.  A list without a URL gets one of this store's."""
+        self._writable()
         package = tidy(package)
         package.url = package.url or self.local_url(package.name or package.title)
         cursor = self.connection.cursor()
@@ -203,10 +233,11 @@ class Store:
         name, so that a list read again replaces itself."""
         words = " ".join(name.casefold().split())
         if not words:
-            raise StoreError(say("Einem Paket fehlen URL und Name.",
-                                 "A package has neither a URL nor a name."))
+            raise StoreError("no-name", "Einem Paket fehlen URL und Name.",
+                             "A package has neither a URL nor a name.")
         row = self.connection.execute("SELECT value FROM meta WHERE key = 'owner'").fetchone()
         if row is None:
+            self._writable()
             row = (str(uuid.uuid4()),)
             self.connection.execute("INSERT INTO meta (key, value) VALUES ('owner', ?)", row)
             self.connection.commit()
@@ -224,14 +255,16 @@ class Store:
         if len(found) == 1:
             return str(found[0])
         if found:
-            raise StoreError(say(
+            raise StoreError(
+                "several-packages",
                 f"Mehrere Pakete heißen {given}; bitte die URL angeben: {', '.join(found)}",
-                f"Several packages are called {given}; please give the URL: {', '.join(found)}"))
-        raise StoreError(say(f"Kein Paket mit der URL oder dem Namen {given}.",
-                             f"No package with the URL or the name {given}."))
+                f"Several packages are called {given}; please give the URL: {', '.join(found)}")
+        raise StoreError("no-package", f"Kein Paket mit der URL oder dem Namen {given}.",
+                         f"No package with the URL or the name {given}.")
 
     def remove_package(self, url: str) -> bool:
         """Take a package out; its overlay stays, for the day the package comes back."""
+        self._writable()
         removed = self.connection.execute("DELETE FROM package WHERE url = ?", (url,)).rowcount
         if removed:
             self._changed()
@@ -252,7 +285,8 @@ class Store:
         for info in self.packages():
             if info.url == url:
                 return info
-        raise StoreError(say(f"Kein Paket mit der URL {url}.", f"No package with the URL {url}."))
+        raise StoreError("no-package", f"Kein Paket mit der URL {url}.",
+                         f"No package with the URL {url}.")
 
     def package(self, url: str) -> Package:
         """A package as it came, without the overlay: what an export writes."""
@@ -260,8 +294,8 @@ class Store:
             "SELECT id, url, version, name, title, publisher, copyright, language,"
             " redistributable FROM package WHERE url = ?", (url,)).fetchone()
         if row is None:
-            raise StoreError(say(f"Kein Paket mit der URL {url}.",
-                                 f"No package with the URL {url}."))
+            raise StoreError("no-package", f"Kein Paket mit der URL {url}.",
+                             f"No package with the URL {url}.")
         concepts: dict[int, Concept] = {}
         for number, code, display, cls, parent in self.connection.execute(
                 "SELECT id, code, display, class, parent FROM concept WHERE package = ?"
@@ -326,10 +360,12 @@ class Store:
             "SELECT 1 FROM concept c JOIN package p ON p.id = c.package"
             " WHERE p.url = ? AND c.code = ?", (url, code)).fetchone()
         if not found:
-            raise StoreError(say(f"Das Paket {url} hat keinen Begriff mit dem Code {code}.",
-                                 f"The package {url} has no concept with the code {code}."))
+            raise StoreError("no-concept",
+                             f"Das Paket {url} hat keinen Begriff mit dem Code {code}.",
+                             f"The package {url} has no concept with the code {code}.")
 
     def _put(self, change: Change) -> None:
+        self._writable()
         self.connection.execute(
             "INSERT OR REPLACE INTO overlay (url, code, action, value, language, kind, made)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -347,7 +383,7 @@ class Store:
         self._known(url, code)
         value = " ".join(term.value.split())
         if not value:
-            raise StoreError(say("Der Begriff ist leer.", "The term is empty."))
+            raise StoreError("empty-term", "Der Begriff ist leer.", "The term is empty.")
         kind = term.kind if term.kind in KINDS else "synonym"
         self._put(Change(url, code, "add", value, term.language, kind))
         self._changed()
@@ -362,6 +398,7 @@ class Store:
 
     def undo(self, change: Change) -> bool:
         """Take one line of the overlay back."""
+        self._writable()
         removed = self.connection.execute(
             "DELETE FROM overlay WHERE url = ? AND code = ? AND action = ? AND value = ?"
             " AND language = ?",
@@ -396,17 +433,34 @@ class Store:
                 raise ValueError("format")
             changes = [Change(**entry) for entry in document["changes"]]
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
-            raise StoreError(say(f"{path} ist keine Überlagerung dieser Bibliothek.",
-                                 f"{path} is not an overlay of this library.")) from error
+            raise StoreError("not-an-overlay", f"{path} ist keine Überlagerung dieser Bibliothek.",
+                             f"{path} is not an overlay of this library.") from error
         for change in changes:
             if change.action not in ("hide", "add", "class"):
-                raise StoreError(say(f"Unbekannte Änderung: {change.action}",
-                                     f"Unknown change: {change.action}"))
+                raise StoreError("unknown-change", f"Unbekannte Änderung: {change.action}",
+                                 f"Unknown change: {change.action}")
             self._put(change)
         self._changed()
         return len(changes)
 
 
-def open_store(path: str | Path | None = None, library: str = "lexcor") -> Store:
+def entries_of(packages: Iterable[Package], classes: Iterable[str] | None = None,
+               languages: Iterable[str] | None = None) -> Iterator[Entry]:
+    """Every term of some packages as recognition sees it, without a store: for a library
+    that tags with the packages it brings, and writes nothing anywhere."""
+    allowed = None if classes is None else set(classes)
+    spoken = None if languages is None else {*languages, ""}
+    for package in packages:
+        for concept in tidy(package).concepts:
+            if allowed is not None and concept.cls not in allowed:
+                continue
+            for term in concept.terms:
+                if spoken is None or term.language in spoken:
+                    yield Entry(term.value, package.url, package.version, concept.code,
+                                concept.display, concept.cls, term.language, term.kind)
+
+
+def open_store(path: str | Path | None = None, library: str = "lexcor",
+               readonly: bool = False) -> Store:
     """Open the store at ``path``, or the store of a library in the user's data folder."""
-    return Store(path if path is not None else data_folder() / f"{library}.sqlite")
+    return Store(path if path is not None else data_folder() / f"{library}.sqlite", readonly)
