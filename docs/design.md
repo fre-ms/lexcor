@@ -3,8 +3,9 @@
 
 # lexcor: design
 
-Draft 0.1, 26 November 2026. Nothing of this is built yet. A prototype of the matcher and a bench are in the
-repository of lexterm, with two reports (in German) on what exists already and what was measured.
+Draft 0.1, 26 November 2026. Stage 0.1 is begun (section 10); nothing beyond it is built yet. The bench, the
+prototype the matcher grew out of and two reports (in German) on what exists already and what was measured
+are in the repository of lexterm.
 
 ## 1 Purpose
 
@@ -26,7 +27,7 @@ Three conditions hold for everything in the core:
 - it gives **the same result for the same input**.
 
 A part that cannot keep them (a recogniser that learns, a language model) is a module that is switched on
-beside the core, and is thought of from the start (section 5.6).
+beside the core, and is thought of from the start (section 4.7).
 
 ## 2 Words used here
 
@@ -53,10 +54,12 @@ which terminologies are published and which every FHIR terminology server reads 
 | terms of a concept, with their language | `concept.designation` (`value`, `language`) |
 | kind of a term: preferred, synonym, abbreviation | `concept.designation.use` |
 | class of a concept | `concept.property` with the code `class` |
-| parent of a concept, where the source has a hierarchy | `concept.property` with the code `parent` |
+| parent of a concept, where the source has a hierarchy | `concept.property` with the code `parent`, FHIR's own property (`http://hl7.org/fhir/concept-properties#parent`) |
 
 Two things FHIR has no element for are kept in an extension on the CodeSystem: whether the package **may be
-passed on** (`redistributable`), and for a term whether it is matched **only as written** (section 4.3).
+passed on** (`redistributable`), and for a term whether it is matched **only as written** (section 4.3). The
+namespace of these extensions, of the kinds of term and of lists without a URI of their own is provisional
+(`https://lexcor.invalid`, one constant in the code) until a lasting one is chosen (section 11).
 
 A plain list of words is a package too: the code of each concept is the word itself, and the URI is a local
 one. **CSV** is the second form, for lists made by hand: one row per term with the columns `term`, `code`,
@@ -95,16 +98,23 @@ Recognition is four stages, each of which can be exchanged (the build of QuickUM
 2. **Candidates**: for each run, the terms of the packages that it may spell.
 3. **Checking**: each candidate is checked and given the kind of its match; rules of a library (section 4.5)
    may accept, reject or mark it.
-4. **Resolution**: of candidates that overlap, the better kind of match wins, then the longer run.
+4. **Resolution**: of candidates that overlap, a match by rule wins over an approximate one, then the longer
+   run, then the better kind of match.
 
 ### 4.2 Runs of words
 
 A run is not formed
 
-- across a line break or the end of a sentence;
-- that begins or ends with a function word (article, preposition, conjunction); inside a run such words stay
-  ("Morbus des Kindes");
-- of a single function word, or of a number alone.
+- across an empty line or the end of a clause (a comma, a bracket, a full stop that does not follow an
+  abbreviation of up to four letters as in "A. carotis");
+- of a single function word (article, preposition, conjunction), or of a number alone.
+
+A run that begins or ends with a function word is formed but marked: there only a term listed in exactly
+these words is found ("Hepatitis A", "Vitamin D"), nothing by its stem or by a variant of its spelling. Inside
+a run such words stay ("Morbus des Kindes"). A word written all in capitals is no function word ("ALS", "HAT").
+
+A single line break does not end a run. Letters come with their lines wrapped, and a term of two words is often
+cut by the end of a line ("absolute" at the end of one line, "Arrhythmie" at the start of the next).
 
 Function words come from a small list in the core, per language, not from a language model. This alone keeps
 "hat", "als" and "sowie" from ever being a term.
@@ -118,9 +128,15 @@ Function words come from a small list in the core, per language, not from a lang
 | **spelling variant** | spellings that stand side by side by rule: umlauts written out or not, `ß` and `ss` (core); further pairs a library names (lexterm: c with k and z, ph with f, th with t) | core, with the library's table |
 | **approximate** | a similarity of letters above a threshold | only on request, section 4.4 |
 
+Every term carries its language, and a caller says in which languages' terms the rules look: with English
+names in the dictionary they tagged "gut", "fast" and "Berlin" in German letters (lexterm's report on the
+trial, section 7.4).
+
 Every assignment says of which kind its match is, and an approximate one how similar. The first three kinds
-give the same result on every run and make assignments. On the trial's test set these rules linked 89 % of the
-places and tagged nothing they should not, where every plain dictionary matcher linked 64 %.
+give the same result on every run and make assignments. For the same words a better kind shuts out a worse one,
+in the order as written, spelling variant, inflected: where "Masern" is listed, "Maser" is not assigned to it by
+its stem. On the trial's test set these rules linked 89 % of the places and tagged nothing they should not,
+where every plain dictionary matcher linked 64 %.
 
 ### 4.4 Approximate matching: for people, not for assignments
 
@@ -170,12 +186,18 @@ proposes is merged with what is there by the rules of section 5.
 | Module | What it would add | What it needs |
 |---|---|---|
 | a recogniser that learns the surroundings of a concept (MedCAT 2) | chooses among several meanings of a term; learns from unlabelled text and from confirmed and rejected assignments | word vectors for German clinical text, which would have to be computed; no graphics card |
-| retrieval by meaning (a multilingual model of term embeddings, run without a graphics card) | proposals for places that no package holds in so many words, also across languages | a model of several hundred megabytes; to be measured |
+| retrieval by meaning (a multilingual model of term embeddings, run without a graphics card) | proposals for places that no package holds in so many words, also across languages | a model of 1.1 GB that states no licence (its English sibling by the same authors is under Apache 2.0); measured (lexterm's report on the trial, section 7): good as a proposal for a person and across languages, not safe as an assignment of its own |
 | a language model run locally | the same, and paraphrases | a strong computer; cannot be packaged with the core |
 
 What they have in common: the core hands them the packages and the annotation documents with a person's
 decisions, which are exactly what such a recogniser learns from; they return proposals with a score; none of
 them is needed for the core to work. Which of them is worth building is decided by the bench, not here.
+
+For the first the bench has decided: **retrieval by meaning is built with stage 0.3, as a module that proposes
+and never assigns** (decided on 26 November 2026). What it finds is shown in the review window as a proposal
+with its nearness, and nothing of it is in force until a person confirms it. The module and its model are not
+part of the core: the user fetches the model, and the licence of the model is settled before anything of it is
+passed on.
 
 ## 5 The annotation document
 
@@ -318,8 +340,12 @@ recogniser that is switched on has to show there what it adds and what it costs.
 
 1. **0.1** The matcher, the vocabulary and the store of identifying terms leave PseudonyMed with their history.
    Packages as FHIR CodeSystem and CSV, the store, the four stages with the kinds of match, `tag` and `covers`.
+   *Begun: the code is in `lexcor/` and gives the prototype's results on the bench, and the history from
+   PseudonyMed is part of this repository's history; PseudonyMed's change to an adapter and the move of the
+   bench are still to come.*
 2. **0.2** The annotation document; the two windows; the place for a library's rules.
-3. **0.3** The interface for recognisers that are switched on; the search for similar terms; UIMA CAS.
+3. **0.3** The interface for recognisers that are switched on, and the first of them: retrieval by meaning as a
+   source of proposals in the review window (section 4.7); the search for similar terms; UIMA CAS.
 4. **0.4** Client of a terminology server.
 5. **0.5** Server.
 
@@ -330,6 +356,13 @@ lexterm and lexident follow each stage with what is theirs.
 1. **Where a user's vocabulary lives today**: in PseudonyMed's pseudonym database. It moves to the store once,
    by a command; PseudonyMed keeps no second copy.
 2. **One store or two** for a user who has both libraries.
-3. **The first learning module** (section 4.7): which, and on what texts it may learn.
+3. **The first learning module** (section 4.7) is decided: retrieval by meaning, proposing only. Open are the
+   licence of its model, which the model's page does not state, and on what texts a recogniser that learns from
+   a user's decisions may learn.
 4. **Languages other than German**: the rules of inflection and the function words are per language; only
    German is planned.
+5. **The namespace** of the extensions and of lists without a URI of their own (section 3.1): a domain of the
+   project's own or another lasting URI.
+6. **Inflected adjectives inside a term** ("chronischer Bronchitis" for "chronische Bronchitis"): the rule
+   allows an ending on the last word only. The search by meaning found such places; whether a rule finds them
+   without false matches is to be measured on the bench.

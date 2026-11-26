@@ -11,9 +11,32 @@ in four stages with the kinds of match German needs, an annotation document that
 windows for review and for the packages, and the interfaces to a terminology server. lexcor knows nothing
 medical and nothing about persons.
 
-The project is at the design stage: there is no code here yet. The [design](docs/design.md) says what is to be
-built and in which order. A prototype of the matcher, a bench and the reports on what exists already are in
-lexterm's repository for now.
+The project is at its first stage (0.1, not released). The [design](docs/design.md) says what is to be built
+and in which order. What is here:
+
+- `lexcor.package`: packages as FHIR CodeSystem (R4, JSON) and as CSV;
+- `lexcor.store`: one SQLite file with the packages and a user's changes to them, kept as an overlay;
+- `lexcor.recognise`: `tag`, recognition in four stages with the kinds of match (as written, spelling variant,
+  inflected);
+- `lexcor.cover`: `covers`, the generous question whether a span is vocabulary at all;
+- a command line: `lexcor packages list|import|export|remove`, `lexcor tag FILE`, with `--json` and
+  `--language de|en`.
+
+```python
+import lexcor
+
+with lexcor.open_store("terms.sqlite") as store:
+    store.add_package(lexcor.read_package("terms.csv", language="de"))
+    for mention in lexcor.tag("Bekannte arterielle Hypertonien.", store):
+        print(mention.text, [(a.code, a.kind) for a in mention.assignments])
+```
+
+The core needs nothing but Python (3.12 or later) and its standard library. Tests: `pytest`; checks: `ruff
+check .` and `mypy`.
+
+The matcher, the vocabulary and the lexicon were written in PseudonyMed. Their history there is part of this
+repository's history: `git log -- legacy/` shows it. The bench, the prototype the matcher grew out of and the
+reports on what exists already are in lexterm's repository for now.
 
 `lexcor` is a working name; the name search is in lexterm's repository.
 
