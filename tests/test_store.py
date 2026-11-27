@@ -223,3 +223,17 @@ def test_the_store_keeps_the_properties_of_a_concept(tmp_path: Path) -> None:
     with open_store(tmp_path / "terms.sqlite", readonly=True) as old:
         assert old.properties(URL, "H1") == {}
         assert [c.display for c in old.package(URL).concepts] == ["Waldklinik", "Seeklinik"]
+
+
+def test_a_language_with_a_region_is_the_language_it_is_a_variety_of(tmp_path: Path) -> None:
+    """Publishers write "de-DE" where a caller asks for "de"."""
+    package = Package(url=URL, language="de-DE", concepts=[
+        Concept("I10", "Hypertonie"), Concept("X", "high blood pressure", "", "",
+                                              [Term("high blood pressure", "en-GB")])])
+    with open_store(tmp_path / "terms.sqlite") as store:
+        store.add_package(package)
+        assert [e.term for e in store.entries(languages=["de"])] == ["Hypertonie"]
+        assert [e.term for e in store.entries(languages=["DE-de"])] == ["Hypertonie"]
+        assert [e.term for e in store.entries(languages=["en"])] == ["high blood pressure"]
+        assert [e.language for e in store.entries()] == ["de-DE", "en-GB"]  # kept as written
+    assert [e.term for e in entries_of([package], languages=["de"])] == ["Hypertonie"]

@@ -137,6 +137,17 @@ def data_folder() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share") / "lexcor"
 
 
+def _speaks(language: str, spoken: set[str] | None) -> bool:
+    """Whether a term's language is among those asked for.  A term that names none passes
+    every choice, and a language with a region ("de-DE", "en-GB") is the language it is a
+    variety of: publishers write either."""
+    return spoken is None or language.split("-")[0].lower() in spoken
+
+
+def _spoken(languages: Iterable[str] | None) -> set[str] | None:
+    return None if languages is None else {*(lang.split("-")[0].lower() for lang in languages), ""}
+
+
 def _now() -> str:
     return dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
 
@@ -350,7 +361,7 @@ class Store:
         every choice of languages."""
         wanted = None if packages is None else set(packages)
         allowed = None if classes is None else set(classes)
-        spoken = None if languages is None else {*languages, ""}
+        spoken = _spoken(languages)
         hidden: set[tuple[str, str, str, str]] = set()
         added: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
         moved: dict[tuple[str, str], str] = {}
@@ -376,12 +387,12 @@ class Store:
             if (url, code) not in seen:
                 seen.add((url, code))
                 for extra, extra_language, extra_kind in added.get((url, code), []):
-                    if spoken is None or extra_language in spoken:
+                    if _speaks(extra_language, spoken):
                         yield Entry(extra, url, version, code, display, cls,
                                     extra_language, extra_kind or "synonym")
             if (url, code, value, language) in hidden or (url, code, value, "") in hidden:
                 continue
-            if spoken is not None and language not in spoken:
+            if not _speaks(language, spoken):
                 continue
             yield Entry(value, url, version, code, display, cls, language, kind)
 
@@ -480,13 +491,13 @@ def entries_of(packages: Iterable[Package], classes: Iterable[str] | None = None
     """Every term of some packages as recognition sees it, without a store: for a library
     that tags with the packages it brings, and writes nothing anywhere."""
     allowed = None if classes is None else set(classes)
-    spoken = None if languages is None else {*languages, ""}
+    spoken = _spoken(languages)
     for package in packages:
         for concept in tidy(package).concepts:
             if allowed is not None and concept.cls not in allowed:
                 continue
             for term in concept.terms:
-                if spoken is None or term.language in spoken:
+                if _speaks(term.language, spoken):
                     yield Entry(term.value, package.url, package.version, concept.code,
                                 concept.display, concept.cls, term.language, term.kind)
 

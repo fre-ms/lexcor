@@ -223,6 +223,13 @@ def from_codesystem(resource: dict[str, Any]) -> Package:
         raise PackageError("no-concepts",
                            "Das CodeSystem enthält keine Begriffe (content: not-present).",
                            "The CodeSystem holds no concepts (content: not-present).")
+    if resource.get("content") == "supplement":
+        raise PackageError(
+            "supplement",
+            "Das CodeSystem ist eine Ergänzung (content: supplement): Es nennt Bezeichnungen zu"
+            " den Kodes eines anderen CodeSystems und ist allein kein Paket.",
+            "The CodeSystem is a supplement (content: supplement): it names wordings for the"
+            " codes of another CodeSystem and is no package on its own.")
     language = _clean(resource.get("language"))
     return tidy(Package(
         url=_clean(resource["url"]), version=_clean(resource.get("version")),

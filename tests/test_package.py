@@ -93,6 +93,8 @@ def test_a_codesystem_of_another_publisher_is_read() -> None:
     {"resourceType": "ValueSet", "url": "http://example.org/x"},
     {"resourceType": "CodeSystem"},
     {"resourceType": "CodeSystem", "url": "http://example.org/x", "content": "not-present"},
+    {"resourceType": "CodeSystem", "url": "http://example.org/x", "content": "supplement",
+     "supplements": "http://example.org/base", "concept": [{"code": "A"}]},
 ])
 def test_what_is_no_usable_codesystem_is_refused(resource: dict[str, object]) -> None:
     with pytest.raises(PackageError):
