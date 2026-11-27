@@ -7,12 +7,15 @@
                                 [--supplements URL]
     lexcor packages export PACKAGE FILE [--own-use]
     lexcor packages remove PACKAGE
+    lexcor packages on PACKAGE... | off PACKAGE...
+    lexcor packages window
     lexcor tag FILE [--package PACKAGE]... [--without PACKAGE]... [--class CLASS]... [--nested]
                     [--annotation FILE [--repeat]]
 
 A package is named by its URL or, where only one is called so, by its title.  Every run
-chooses its packages: all of the store, those named with ``--package``, less those named
-with ``--without``.  The annotation document records what the run applied, and ``--repeat``
+chooses its packages: those a person has ticked (in the package window, or with ``packages
+on``/``off``; at first all), or those named with ``--package``, less those named with
+``--without``.  The annotation document records what the run applied, and ``--repeat``
 runs again exactly as a document records it, or refuses and says what is no longer the same.
 
 Names of commands and options are English; what a person reads is German or English
@@ -43,6 +46,9 @@ Tagger = Callable[[str, Store, Iterable[str] | None, Iterable[str] | None, bool]
 # what a library hands over to say which packages a run applies, as a document names them
 # (a library that answers from packages of its own where the store holds none says so here)
 Lister = Callable[[Store, list[str] | None], list[dict[str, str]]]
+# what a library hands over to open its package window over a store (its readers, its text on
+# where terminologies come from); returns the exit code
+Window = Callable[[Store], int]
 
 
 def _parser(program: str) -> argparse.ArgumentParser:
@@ -89,6 +95,15 @@ def _parser(program: str) -> argparse.ArgumentParser:
         "write a package that may not be passed on as well (for yourself only)"))
     gone = actions.add_parser("remove", help=say("ein Paket entfernen", "take a package out"))
     gone.add_argument("package", help=say("URL oder Titel", "URL or title"))
+    for action, words in (("on", ("ankreuzen: bei den folgenden Läufen anwenden",
+                                  "tick: apply in the runs that follow")),
+                          ("off", ("abwählen: bei den folgenden Läufen nicht anwenden",
+                                   "untick: do not apply in the runs that follow"))):
+        switch = actions.add_parser(action, help=say(*words))
+        switch.add_argument("package", nargs="+", help=say("URL oder Titel", "URL or title"))
+    actions.add_parser("window", help=say(
+        "das Paketfenster öffnen: ankreuzen, aufnehmen, schreiben, entfernen (braucht PySide6)",
+        "open the package window: tick, take in, write out, remove (needs PySide6)"))
 
     find = commands.add_parser("tag", help=say(
         "die Begriffe in einem Text finden", "find the terms in a text"))
@@ -161,7 +176,9 @@ def fit_notes(store: Store, info: PackageInfo) -> tuple[dict[str, Any] | None, l
 def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     if args.action == "list":
         found = store.packages()
-        lines = [f"{p.title or p.url}  {p.version}  {p.concepts} / {p.terms}  {p.url}"
+        off = set(store.switched_off())
+        lines = [("  " if p.url in off else "✓ ")
+                 + f"{p.title or p.url}  {p.version}  {p.concepts} / {p.terms}  {p.url}"
                  + (say(f"  (ergänzt {p.supplements})", f"  (supplements {p.supplements})")
                     if p.supplements else "")
                  + ("" if p.redistributable else say("  (nicht weitergebbar)",
@@ -169,7 +186,14 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
                  for p in found]
         text = "\n".join(lines) if lines else say("Die Ablage enthält kein Paket.",
                                                   "The store holds no package.")
-        return {"packages": [vars(p) for p in found]}, text
+        return {"packages": [vars(p) | {"ticked": p.url not in off} for p in found]}, text
+    if args.action in ("on", "off"):
+        urls = [store.find(p) for p in args.package]
+        for url in urls:
+            store.switch(url, args.action == "on")
+        return {"ticked": store.chosen()}, "\n".join(
+            say(f"Angekreuzt: {u}", f"Ticked: {u}") if args.action == "on"
+            else say(f"Abgewählt: {u}", f"Unticked: {u}") for u in urls)
     if args.action == "import" and packages.is_fhir_package(args.file):
         return _import_fhir_package(store, args.file)
     if args.action == "import":
@@ -236,8 +260,9 @@ def _import_fhir_package(store: Store, file: Path) -> tuple[dict[str, Any], str]
 
 
 def _chosen(store: Store, args: argparse.Namespace) -> list[str] | None:
-    """The packages a run applies: all (None), those named, less those left out."""
-    chosen = None if args.package is None else [store.find(p) for p in args.package]
+    """The packages a run applies: those ticked (None: all), or those named, less those
+    left out."""
+    chosen = store.chosen() if args.package is None else [store.find(p) for p in args.package]
     if args.without:
         left = {store.find(p) for p in args.without}
         chosen = [url for url in (chosen if chosen is not None
@@ -315,16 +340,25 @@ def _tag(store: Store, args: argparse.Namespace, tagger: Tagger, made_with: str,
     return {"mentions": [_mention(m) for m in mentions]}, "\n".join(lines)
 
 
+def _window(store: Store) -> int:
+    """The core's package window over a store."""
+    from lexcor.window import open_window
+
+    return open_window(store)
+
+
 def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
          library: str = "lexcor", variants: Variants = (), tagger: Tagger | None = None,
-         version: str | None = None, lister: Lister | None = None) -> int:
+         version: str | None = None, lister: Lister | None = None,
+         window: Window | None = None) -> int:
     """Run one command; returns the exit code.  A library built on the core calls this with
     its own name and version (``program``, ``version``; an annotation document names them as
     what made it), ``library`` for the store it keeps in the user's data folder, its table
     of spellings that stand side by side (``variants``) or, where it recognises by rules of
     its own, the function that tags (``tagger``), and where it answers from packages of its
     own when the store holds none, the function that names the packages a run applies
-    (``lister``)."""
+    (``lister``), and the function that opens its package window (``window``; else the
+    core's, without readers or texts of a library)."""
     from lexcor import __version__
 
     made_with = f"{program} {version or __version__}"
@@ -339,6 +373,8 @@ def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
     args = _parser(program).parse_args(given)
     try:
         with open_store(args.store, library) as store:
+            if args.command == "packages" and args.action == "window":
+                return (window or _window)(store)
             document, text = _packages(store, args) if args.command == "packages" \
                 else _tag(store, args, tagger, made_with, lister or packages_of)
     except (LexError, OSError, UnicodeDecodeError) as error:

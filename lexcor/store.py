@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS meta (
 ) WITHOUT ROWID;
 """
 OVERLAY_FORMAT = 1
+CHOICE = "switched-off"  # the key in meta under which the packages a person unticked are kept
+ACTIONS = ("hide", "add", "class")
 
 
 class StoreError(LexError):
@@ -356,6 +358,46 @@ class Store:
         raise StoreError("no-package", f"Kein Paket mit der URL oder dem Namen {given}.",
                          f"No package with the URL or the name {given}.")
 
+    # -- a person's choice -------------------------------------------------------------------------
+    def switched_off(self) -> list[str]:
+        """The packages a person has unticked: not applied by a run that follows the
+        person's choice (a window, the command line without ``--package``).  A package
+        stays unticked through a new version, and while it is out of the store."""
+        row = self.connection.execute("SELECT value FROM meta WHERE key = ?", (CHOICE,)).fetchone()
+        return sorted(json.loads(row[0])) if row else []
+
+    def chosen(self) -> list[str] | None:
+        """The packages a run that follows the person's choice applies: every package of
+        the store but those unticked; None where nothing is unticked (all of them)."""
+        off = set(self.switched_off())
+        held = [p.url for p in self.packages()]
+        return None if off.isdisjoint(held) else [url for url in sorted(held) if url not in off]
+
+    def choose(self, urls: Iterable[str]) -> None:
+        """Tick exactly these packages; every other package of the store is unticked."""
+        self._writable()
+        wanted = set(urls)
+        off = {url for url in self.switched_off() if url not in wanted}
+        off |= {p.url for p in self.packages() if p.url not in wanted}
+        self._remember(off)
+
+    def switch(self, url: str, on: bool) -> None:
+        """Tick or untick one package of the store."""
+        self._writable()
+        self.info(url)
+        off = set(self.switched_off())
+        if on:
+            off.discard(url)
+        else:
+            off.add(url)
+        self._remember(off)
+
+    def _remember(self, off: set[str]) -> None:
+        self.connection.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key)"
+            " DO UPDATE SET value = excluded.value", (CHOICE, json.dumps(sorted(off))))
+        self.connection.commit()
+
     def remove_package(self, url: str) -> bool:
         """Take a package out; its overlay stays, for the day the package comes back."""
         self._writable()
@@ -428,26 +470,26 @@ class Store:
             " ORDER BY y.name", (url, code)).fetchall())
 
     # -- hierarchy and supplements -----------------------------------------------------------------
-    def _parents(self) -> dict[int, set[str]]:
-        """The codes that are a parent, for each package with a hierarchy, by its number."""
-        parents: dict[int, set[str]] = {}
-        for number, parent in self.connection.execute(
-                "SELECT package, parent FROM concept WHERE parent != ''"):
-            parents.setdefault(number, set()).add(parent)
-        return parents
+    def _parents(self, number: int) -> set[str] | None:
+        """The codes that are a parent in one package; None for a package without a
+        hierarchy."""
+        found = {parent for (parent,) in self.connection.execute(
+            "SELECT DISTINCT parent FROM concept WHERE package = ? AND parent != ''", (number,))}
+        return found or None
 
-    def _bases(self, parents: dict[int, set[str]] | None = None) -> Held:
-        """The code systems that supplements of this store name, as far as it holds them."""
-        parents = self._parents() if parents is None else parents
+    def _bases(self, named: Iterable[str] | None = None) -> Held:
+        """The code systems that supplements name (those of the store, or the ones given),
+        as far as the store holds them."""
+        if named is None:
+            named = (str(n) for (n,) in self.connection.execute(
+                f"SELECT DISTINCT {self._supplements} FROM package p"))
         bases: Held = {}
-        named = self.connection.execute(
-            f"SELECT DISTINCT {self._supplements} FROM package p").fetchall()
-        for system in sorted({supplemented(str(n))[0] for (n,) in named if n}):
+        for system in sorted({supplemented(n)[0] for n in named if n}):
             row = self.connection.execute(
                 f"SELECT p.id, p.version FROM package p WHERE p.url = ?"
                 f" AND {self._supplements} = ''", (system,)).fetchone()
             if row is not None:
-                above = parents.get(row[0])
+                above = self._parents(row[0])
                 bases[system] = (row[1], {
                     code: (display, cls, terminal(code, above))
                     for code, display, cls in self.connection.execute(
@@ -505,16 +547,19 @@ class Store:
                 added.setdefault((url, code), []).append((value, language, kind))
             else:
                 moved[(url, code)] = value
-        parents = self._parents()
-        bases = self._bases(parents)
+        held = [(number, url, str(named)) for number, url, named in self.connection.execute(
+            f"SELECT p.id, p.url, {self._supplements} FROM package p")
+            if wanted is None or url in wanted]
+        bases = self._bases(named for _n, _u, named in held)
+        parents = {number: self._parents(number) for number, _u, named in held if not named}
+        numbers = ",".join(str(number) for number, _u, _n in held) or "NULL"
         rows = self.connection.execute(
             f"SELECT p.id, p.url, {self._supplements}, p.version, c.code, c.display, c.class,"
             " t.value, t.language, t.kind FROM term t JOIN concept c ON c.id = t.concept"
-            " JOIN package p ON p.id = c.package ORDER BY p.url, c.code, t.value, t.language")
+            f" JOIN package p ON p.id = c.package WHERE p.id IN ({numbers})"
+            " ORDER BY p.url, c.code, t.value, t.language")
         seen: set[tuple[str, str]] = set()
         for number, url, named, version, code, display, cls, value, language, kind in rows:
-            if wanted is not None and url not in wanted:
-                continue
             source, source_version = ("", "") if not named else (url, version)
             if named:
                 url, version, display, cls, end = _coded(named, code, display, cls, bases)
@@ -626,13 +671,22 @@ class Store:
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
             raise StoreError("not-an-overlay", f"{path} ist keine Überlagerung dieser Bibliothek.",
                              f"{path} is not an overlay of this library.") from error
-        for change in changes:
-            if change.action not in ("hide", "add", "class"):
+        return self.apply(changes)
+
+    def apply(self, changes: Iterable[Change]) -> int:
+        """Take many changes into the overlay in one step, as they are given (by the URL
+        they name); returns how many.  Changes for packages or concepts the store does not
+        hold are taken in as well: they come into force when the package does.  Nothing is
+        taken in when one of them is no change this store knows."""
+        given = list(changes)
+        for change in given:
+            if change.action not in ACTIONS:
                 raise StoreError("unknown-change", f"Unbekannte Änderung: {change.action}",
                                  f"Unknown change: {change.action}")
+        for change in given:
             self._put(change)
         self._changed()
-        return len(changes)
+        return len(given)
 
 
 def entries_of(packages: Iterable[Package], classes: Iterable[str] | None = None,

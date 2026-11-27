@@ -332,7 +332,16 @@ confirms, rejects, adds an assignment (searching the packages by wording or code
 request), and marks a place by hand that was not recognised. "Confirm all of this package" for long texts.
 
 **Packages**: the packages with licence, version and number of terms; search, edit, add and delete terms;
-import and export.
+import and export. Every package has a box to **tick for the runs that follow**: what is ticked is applied, and
+the annotation document of a run records what that was (section 5). A supplement stands below the code system
+it supplements, with a box of its own. The window keeps the ticks in the store, so that the command line
+follows them as well (`packages on`/`off` without a window); a program that keeps its choice itself embeds
+the list without that.
+
+*Built in 0.2.6* (`lexcor.window`, `lexcor packages window`; PySide6 as the extra `lexcor[window]`): the list
+with its ticks, taking a file in beside the window (a library adds the forms it reads, `Reader`), writing a
+package out (one that may not be passed on only for the person's own use), taking one out, and beside the list
+the library's text on where terminologies come from. Still to come: searching and editing terms in the window.
 
 Both are widgets that another program can embed. The interface is German or English. What the classes are
 called and how they are coloured comes from the library.
@@ -438,7 +447,8 @@ recogniser that is switched on has to show there what it adds and what it costs.
    *Built in 0.2.0: the annotation document (`lexcor.annotation`, `lexcor tag FILE --annotation FILE`) and
    properties of a concept in packages and in the store. In 0.2.4: supplements (section 3.1). In 0.2.5: the
    record of which packages a run applied, with the user's changes, and the repetition of a run as recorded;
-   whether a code is terminal (section 5). Still to come: the windows and the place for a library's rules.*
+   whether a code is terminal (section 5). In 0.2.6: the package window with the person's choice (section 6).
+   Still to come: the review window and the place for a library's rules.*
 3. **0.3** The interface for recognisers that are switched on, and the first of them: retrieval by meaning as a
    source of proposals in the review window (section 4.7); the search for similar terms; UIMA CAS.
 4. **0.4** Client of a terminology server.

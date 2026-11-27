@@ -49,7 +49,7 @@ from lexcor.store import (
     open_store,
 )
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 __all__ = [
     "Annotation", "AnnotationError", "Assignment", "Change", "Concept", "Cover", "Entry", "Fit",

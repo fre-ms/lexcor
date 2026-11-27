@@ -32,6 +32,11 @@ document records exactly what it applied: each package with its version, the fin
 the user's changes to it, and the program that ran. `lexcor tag FILE --annotation DOC --repeat` runs again as
 the document records it, or refuses and says which package is no longer the same.
 
+The package window (`lexcor packages window`, or `lexcor.window.PackageWindow` in a program of one's own) shows
+the packages of a store with a box to tick for the runs that follow, and takes files in, writes packages out
+and takes them out. It needs PySide6: `pip install "lexcor[window]"`. Without a window, `lexcor packages
+on|off PACKAGE` ticks and unticks.
+
 ```python
 import lexcor
 
