@@ -12,7 +12,14 @@ The common core of lexterm (medical terms) and lexident (identifying information
         ...
 """
 
-from lexcor.annotation import Annotation, AnnotationError, annotate
+from lexcor.annotation import (
+    Annotation,
+    AnnotationError,
+    annotate,
+    differences,
+    listed,
+    packages_of,
+)
 from lexcor.annotation import load as load_annotation
 from lexcor.cover import Cover, cover, covers
 from lexcor.language import LexError, say, set_language
@@ -42,11 +49,12 @@ from lexcor.store import (
     open_store,
 )
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 __all__ = [
     "Annotation", "AnnotationError", "Assignment", "Change", "Concept", "Cover", "Entry", "Fit",
-    "Kind", "LexError", "Mention", "annotate", "load_annotation",
+    "Kind", "LexError", "Mention", "annotate", "differences", "listed", "load_annotation",
+    "packages_of",
     "Package", "PackageError", "PackageInfo", "Recogniser", "Store", "StoreError", "Term",
     "cover", "covers", "entries_of", "open_store", "read_codesystem", "read_csv",
     "read_fhir_package", "read_package",

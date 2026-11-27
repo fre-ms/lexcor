@@ -16,6 +16,7 @@ the system gives the code where the store holds the system as well.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import sqlite3
@@ -116,25 +117,46 @@ class Fit:
     unknown: int
 
 
-# of each code system held that a supplement names: its version, and name and class by code
-Held = dict[str, tuple[str, dict[str, tuple[str, str]]]]
+# of each code system held that a supplement names: its version, and by code the name, the
+# class and whether the code is terminal
+Held = dict[str, tuple[str, dict[str, tuple[str, str, bool | None]]]]
+Coded = tuple[str, str, str, str, bool | None]  # system, version, name, class, terminal
 
 
-def _coded(named: str, code: str, display: str, cls: str,
-           bases: Held) -> tuple[str, str, str, str]:
+def _coded(named: str, code: str, display: str, cls: str, bases: Held) -> Coded:
     """Where a term of a supplement codes: in the system it supplements.  Where that system
-    is held and has the code, with its version and the name and class it gives the code;
-    else with the version the supplement names and what the supplement says itself."""
+    is held and has the code, with its version and the name, the class and the place in the
+    hierarchy it gives the code; else with the version the supplement names, what the
+    supplement says itself, and nothing about the hierarchy."""
     system, version = supplemented(named)
     held = bases.get(system)
     if held and code in held[1]:
         return system, held[0], *held[1][code]
-    return system, version, display, cls
+    return system, version, display, cls, None
+
+
+def terminal(code: str, parents: set[str] | None) -> bool | None:
+    """Whether a code is terminal in its code system: no other code has it as its parent.
+    None for a code system without a hierarchy, where the question does not arise."""
+    return None if parents is None else code not in parents
+
+
+def digest_of(changes: Iterable[Change]) -> str:
+    """The fingerprint of some changes of an overlay, the same for the same changes whenever
+    they were made; empty for none."""
+    listed = sorted((c.url, c.code, c.action, c.value, c.language, c.kind) for c in changes)
+    if not listed:
+        return ""
+    return hashlib.sha256(json.dumps(listed, ensure_ascii=False, separators=(",", ":"))
+                          .encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
 class Entry:
-    """One term as recognition sees it: its wording, and the concept it stands for."""
+    """One term as recognition sees it: its wording, and the concept it stands for.
+    ``package`` and ``package_version`` name the package the term is in where that is not
+    the code system itself (a supplement); ``terminal`` says whether the code is terminal in
+    a code system with a hierarchy (None in one without)."""
 
     term: str
     system: str
@@ -144,6 +166,9 @@ class Entry:
     cls: str
     language: str
     kind: str
+    package: str = ""
+    package_version: str = ""
+    terminal: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -402,9 +427,18 @@ class Store:
             " JOIN package p ON p.id = c.package WHERE p.url = ? AND c.code = ?"
             " ORDER BY y.name", (url, code)).fetchall())
 
-    # -- supplements -------------------------------------------------------------------------------
-    def _bases(self) -> Held:
+    # -- hierarchy and supplements -----------------------------------------------------------------
+    def _parents(self) -> dict[int, set[str]]:
+        """The codes that are a parent, for each package with a hierarchy, by its number."""
+        parents: dict[int, set[str]] = {}
+        for number, parent in self.connection.execute(
+                "SELECT package, parent FROM concept WHERE parent != ''"):
+            parents.setdefault(number, set()).add(parent)
+        return parents
+
+    def _bases(self, parents: dict[int, set[str]] | None = None) -> Held:
         """The code systems that supplements of this store name, as far as it holds them."""
+        parents = self._parents() if parents is None else parents
         bases: Held = {}
         named = self.connection.execute(
             f"SELECT DISTINCT {self._supplements} FROM package p").fetchall()
@@ -413,10 +447,24 @@ class Store:
                 f"SELECT p.id, p.version FROM package p WHERE p.url = ?"
                 f" AND {self._supplements} = ''", (system,)).fetchone()
             if row is not None:
+                above = parents.get(row[0])
                 bases[system] = (row[1], {
-                    code: (display, cls) for code, display, cls in self.connection.execute(
+                    code: (display, cls, terminal(code, above))
+                    for code, display, cls in self.connection.execute(
                         "SELECT code, display, class FROM concept WHERE package = ?", (row[0],))})
         return bases
+
+    def system_of(self, url: str) -> str:
+        """The code system a package codes in: its own URL, or for a supplement the URL of
+        the code system it supplements.  The overlay of a code is kept under this URL."""
+        row = self.connection.execute(
+            f"SELECT {self._supplements} FROM package p WHERE p.url = ?", (url,)).fetchone()
+        return supplemented(str(row[0]))[0] if row and row[0] else url
+
+    def overlay_digest(self, url: str) -> str:
+        """The fingerprint of the changes in force for the terms of a package (for a
+        supplement those of the code system it supplements); empty where there are none."""
+        return digest_of(self.overlay(self.system_of(url)))
 
     def fit(self, url: str) -> Fit | None:
         """How the supplement with this URL fits the code system it supplements, as this
@@ -457,17 +505,21 @@ class Store:
                 added.setdefault((url, code), []).append((value, language, kind))
             else:
                 moved[(url, code)] = value
-        bases = self._bases()
+        parents = self._parents()
+        bases = self._bases(parents)
         rows = self.connection.execute(
-            f"SELECT p.url, {self._supplements}, p.version, c.code, c.display, c.class, t.value,"
-            " t.language, t.kind FROM term t JOIN concept c ON c.id = t.concept"
+            f"SELECT p.id, p.url, {self._supplements}, p.version, c.code, c.display, c.class,"
+            " t.value, t.language, t.kind FROM term t JOIN concept c ON c.id = t.concept"
             " JOIN package p ON p.id = c.package ORDER BY p.url, c.code, t.value, t.language")
         seen: set[tuple[str, str]] = set()
-        for url, named, version, code, display, cls, value, language, kind in rows:
+        for number, url, named, version, code, display, cls, value, language, kind in rows:
             if wanted is not None and url not in wanted:
                 continue
+            source, source_version = ("", "") if not named else (url, version)
             if named:
-                url, version, display, cls = _coded(named, code, display, cls, bases)
+                url, version, display, cls, end = _coded(named, code, display, cls, bases)
+            else:
+                end = terminal(code, parents.get(number))
             cls = moved.get((url, code), cls)
             if (url, code, "", "") in hidden or (allowed is not None and cls not in allowed):
                 continue
@@ -476,12 +528,13 @@ class Store:
                 for extra, extra_language, extra_kind in added.get((url, code), []):
                     if _speaks(extra_language, spoken):
                         yield Entry(extra, url, version, code, display, cls,
-                                    extra_language, extra_kind or "synonym")
+                                    extra_language, extra_kind or "synonym", terminal=end)
             if (url, code, value, language) in hidden or (url, code, value, "") in hidden:
                 continue
             if not _speaks(language, spoken):
                 continue
-            yield Entry(value, url, version, code, display, cls, language, kind)
+            yield Entry(value, url, version, code, display, cls, language, kind, source,
+                        source_version, end)
 
     # -- overlay -----------------------------------------------------------------------------------
     def _known(self, url: str, code: str) -> None:
@@ -506,13 +559,17 @@ class Store:
              _now()))
 
     def hide(self, url: str, code: str, value: str = "", language: str = "") -> None:
-        """Hide one term of a concept, or with an empty ``value`` the whole concept."""
+        """Hide one term of a concept, or with an empty ``value`` the whole concept.  A
+        change named by the URL of a supplement is kept for the code system it supplements:
+        that is where its terms code."""
+        url = self.system_of(url)
         self._known(url, code)
         self._put(Change(url, code, "hide", value, language))
         self._changed()
 
     def add_term(self, url: str, code: str, term: Term) -> None:
         """Add a term to a concept of a package."""
+        url = self.system_of(url)
         self._known(url, code)
         value = " ".join(term.value.split())
         if not value:
@@ -523,6 +580,7 @@ class Store:
 
     def set_class(self, url: str, code: str, cls: str) -> None:
         """Move a concept to another class."""
+        url = self.system_of(url)
         self._known(url, code)
         self.connection.execute(
             "DELETE FROM overlay WHERE url = ? AND code = ? AND action = 'class'", (url, code))
@@ -584,23 +642,30 @@ def entries_of(packages: Iterable[Package], classes: Iterable[str] | None = None
     allowed = None if classes is None else set(classes)
     spoken = _spoken(languages)
     given = [tidy(package) for package in packages]
+    parents = {package.url: {c.parent for c in package.concepts if c.parent} or None
+               for package in given if not package.supplements}
     named = {supplemented(package)[0] for package in given if package.supplements}
-    bases: Held = {package.url: (package.version,
-                                 {c.code: (c.display, c.cls) for c in package.concepts})
-                   for package in given if package.url in named and not package.supplements}
+    bases: Held = {package.url: (package.version, {
+        c.code: (c.display, c.cls, terminal(c.code, parents[package.url]))
+        for c in package.concepts})
+        for package in given if package.url in named and not package.supplements}
     for package in given:
         for concept in package.concepts:
-            url, version, display, cls = (package.url, package.version, concept.display,
-                                          concept.cls)
+            source, source_version = ("", "") if not package.supplements else (
+                package.url, package.version)
             if package.supplements:
-                url, version, display, cls = _coded(package.supplements, concept.code, display,
-                                                    cls, bases)
+                url, version, display, cls, end = _coded(
+                    package.supplements, concept.code, concept.display, concept.cls, bases)
+            else:
+                url, version, display, cls = (package.url, package.version, concept.display,
+                                              concept.cls)
+                end = terminal(concept.code, parents[package.url])
             if allowed is not None and cls not in allowed:
                 continue
             for term in concept.terms:
                 if _speaks(term.language, spoken):
                     yield Entry(term.value, url, version, concept.code, display, cls,
-                                term.language, term.kind)
+                                term.language, term.kind, source, source_version, end)
 
 
 def open_store(path: str | Path | None = None, library: str = "lexcor",

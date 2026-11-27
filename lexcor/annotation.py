@@ -14,7 +14,12 @@ a person) and how it stands (proposed, confirmed, rejected).  The rules:
   own (``lost``), not dropped;
 - the same text, the same mentions and the same decisions give the same file, byte for
   byte.  The library never reads the clock or asks who is at the keyboard: who decided and
-  when is what the caller says, and may be left out.
+  when is what the caller says, and may be left out;
+- the document names every package the last run applied, with its version, the
+  fingerprint of its content and the fingerprint of the user's changes in force for it, and
+  keeps the packages of earlier runs that decisions in it still come from; a run can be
+  repeated exactly as recorded, and refuses where a package is no longer what it was
+  (:func:`differences`).
 
 Positions count Unicode code points from the start of the text.
 """
@@ -29,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from lexcor.language import LexError
+from lexcor.package import Package, supplemented, tidy
 from lexcor.recognise import Assignment, Kind, Mention
 from lexcor.store import Store
 
@@ -37,6 +43,12 @@ PROPOSED, CONFIRMED, REJECTED = "proposed", "confirmed", "rejected"
 STATUSES = (PROPOSED, CONFIRMED, REJECTED)
 MACHINE, PERSON = "machine", "person"
 CONTEXT = 16  # how many code points before and after a mention are kept to find it again
+# how a package listed in a document was used; a package with none had its terms applied in
+# the last run
+NAMES = "names"  # its names and classes were read for the codes of a supplement applied
+EARLIER = "earlier"  # applied in an earlier run; decisions in the document come from it
+# what a document says of a package, in this order
+PACKAGE_KEYS = ("url", "version", "sha256", "title", "supplements", "overlay", "use")
 
 
 class AnnotationError(LexError):
@@ -61,11 +73,21 @@ class Assigned:
     status: str = PROPOSED
     decided_by: str = ""
     decided_at: str = ""
+    package: str = ""
+    package_version: str = ""
+    terminal: bool | None = None
 
     @property
     def key(self) -> tuple[str, str, str]:
         """What makes two assignments of one mention the same: system, code and class."""
         return (self.system, self.code, self.cls)
+
+    @property
+    def source(self) -> tuple[str, str]:
+        """The package a machine's assignment came from, and its version: the code system
+        itself, or the supplement named."""
+        return (self.package or self.system, self.package_version if self.package
+                else self.version)
 
     @property
     def decided(self) -> bool:
@@ -99,12 +121,62 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _listing(url: str, version: str, sha256: str, title: str, supplements: str,
+             overlay: str, use: str) -> dict[str, str]:
+    entry = {"url": url, "version": version, "sha256": sha256}
+    for name, value in (("title", title), ("supplements", supplements), ("overlay", overlay),
+                        ("use", use)):
+        if value:
+            entry[name] = value
+    return entry
+
+
 def packages_of(store: Store, urls: Iterable[str] | None = None) -> list[dict[str, str]]:
-    """The packages of a store as a document names them (all, or those with these URLs)."""
+    """The packages of a store a run applies (all, or those with these URLs) as a document
+    names them: each with its version, the fingerprint of its content (``sha256``) and of
+    the user's changes in force for its terms (``overlay``, where there are any), and for a
+    supplement the code system it supplements.  A code system whose names a chosen
+    supplement reads without being chosen itself is named with ``use`` "names"."""
     wanted = None if urls is None else set(urls)
-    return [{"url": p.url, "version": p.version, "sha256": p.sha256}
-            for p in sorted(store.packages(), key=lambda p: p.url)
-            if wanted is None or p.url in wanted]
+    held = store.packages()
+    chosen = [p for p in held if wanted is None or p.url in wanted]
+    named = {supplemented(p.supplements)[0] for p in chosen if p.supplements}
+    taken = {p.url for p in chosen}
+    read = [p for p in held if p.url in named and p.url not in taken and not p.supplements]
+    return sorted((_listing(p.url, p.version, p.sha256, p.title, p.supplements,
+                            store.overlay_digest(p.url), use)
+                   for p, use in [(p, "") for p in chosen] + [(p, NAMES) for p in read]),
+                  key=lambda e: (e["url"], e["version"]))
+
+
+def listed(packages: Iterable[Package]) -> list[dict[str, str]]:
+    """Packages a run applies without a store (those a library brings) as a document names
+    them: as :func:`packages_of` does; there is no overlay, and every package given has its
+    terms applied."""
+    return sorted((_listing(p.url, p.version, p.sha256(), p.title, p.supplements, "", "")
+                   for p in (tidy(p) for p in packages)), key=lambda e: (e["url"], e["version"]))
+
+
+_COMPARED = ("version", "sha256", "overlay", "supplements", "use")
+
+
+def differences(recorded: Iterable[Mapping[str, str]],
+                current: Iterable[Mapping[str, str]]) -> list[tuple[str, str]]:
+    """What stands in the way of repeating a run exactly: how the packages it applied
+    (``recorded``, from its document) differ from those a run would apply now
+    (``current``).  Each difference is a URL with what differs: "missing" (no longer
+    there), "added" (there now, not then), or the first of "version", "sha256" (the
+    content), "overlay" (the user's changes), "supplements" or "use" that differs.  Packages
+    of earlier runs are no part of the comparison.  Empty: the run can be repeated."""
+    then = {p.get("url", ""): p for p in recorded if p.get("use") != EARLIER}
+    now = {p.get("url", ""): p for p in current if p.get("use") != EARLIER}
+    found = [(url, "missing") for url in sorted(set(then) - set(now))]
+    found += [(url, "added") for url in sorted(set(now) - set(then))]
+    for url in sorted(set(then) & set(now)):
+        differing = [k for k in _COMPARED if then[url].get(k, "") != now[url].get(k, "")]
+        if differing:
+            found.append((url, differing[0]))
+    return sorted(found)
 
 
 @dataclass
@@ -130,13 +202,13 @@ class Annotation:
             self._follow(text)
         self.sha256, self.length = digest(text), len(text)
         self.made_with = made_with or self.made_with
-        if packages is not None:
-            self.packages = sorted((dict(p) for p in packages), key=lambda p: p.get("url", ""))
         if settings is not None:
             self.settings = dict(settings)
         for noted in self.mentions:
             noted.assignments = [a for a in noted.assignments
                                  if a.decided or a.recogniser != recogniser]
+        if packages is not None:
+            self._list(packages)
         places = {(n.start, n.end): n for n in self.mentions}
         for mention in found:
             place = places.get((mention.start, mention.end))
@@ -150,6 +222,19 @@ class Annotation:
         self.mentions = [n for n in self.mentions if n.assignments or n.by == PERSON]
         self._settle(text)
         return self
+
+    def _list(self, packages: Iterable[Mapping[str, str]]) -> None:
+        """The packages of this run, and those of earlier runs that decisions still come
+        from (marked as such): every assignment of a machine names a package listed."""
+        now = [dict(p) for p in packages]
+        applied = {(p.get("url", ""), p.get("version", "")) for p in now
+                   if p.get("use") != NAMES}
+        used = {a.source for n in self.mentions + self.lost for a in n.assignments
+                if a.by == MACHINE}
+        kept = [dict(p, use=EARLIER) for p in self.packages
+                if (p.get("url", ""), p.get("version", "")) in used - applied]
+        self.packages = sorted(now + kept, key=lambda p: (p.get("url", ""), p.get("version", ""),
+                                                          p.get("use", "")))
 
     def _follow(self, text: str) -> None:
         """After the text has changed: every mention where its wording stands now, and those
@@ -274,8 +359,7 @@ class Annotation:
         document: dict[str, Any] = {
             "lexcor": FORMAT, "made_with": self.made_with,
             "text": {"sha256": self.sha256, "length": self.length},
-            "packages": [{k: p[k] for k in ("url", "version", "sha256") if k in p}
-                         for p in self.packages],
+            "packages": [{k: p[k] for k in PACKAGE_KEYS if k in p} for p in self.packages],
             "settings": {k: self.settings[k] for k in sorted(self.settings)},
             "mentions": [_mention(n) for n in self.mentions]}
         if self.lost:
@@ -301,7 +385,8 @@ def annotate(text: str, found: Iterable[Mention], recogniser: str, made_with: st
 def _proposed(assignment: Assignment, recogniser: str) -> Assigned:
     return Assigned(assignment.system, assignment.version, assignment.code, assignment.display,
                     assignment.cls, assignment.term, assignment.kind.value, assignment.score,
-                    MACHINE, recogniser)
+                    MACHINE, recogniser, package=assignment.package,
+                    package_version=assignment.package_version, terminal=assignment.terminal)
 
 
 def _found_again(text: str, noted: Noted) -> int | None:
@@ -339,10 +424,16 @@ def _assignment(assigned: Assigned) -> dict[str, Any]:
     origin = {"by": assigned.by}
     if assigned.recogniser:
         origin["recogniser"] = assigned.recogniser
+    if assigned.package:
+        origin["package"] = assigned.package
+        origin["package_version"] = assigned.package_version
     document: dict[str, Any] = {
         "system": assigned.system, "version": assigned.version, "code": assigned.code,
-        "display": assigned.display, "class": assigned.cls, "term": assigned.term,
-        "match": match, "origin": origin, "status": assigned.status}
+        "display": assigned.display, "class": assigned.cls}
+    if assigned.terminal is not None:
+        document["terminal"] = assigned.terminal
+    document |= {"term": assigned.term, "match": match, "origin": origin,
+                 "status": assigned.status}
     decision = {k: v for k, v in (("by", assigned.decided_by), ("at", assigned.decided_at)) if v}
     if decision:
         document["decision"] = decision
@@ -366,13 +457,16 @@ def _read_assignment(data: Mapping[str, Any]) -> Assigned:
     if status not in STATUSES or str(match.get("kind", Kind.AS_WRITTEN.value)) not in {
             k.value for k in Kind}:
         raise ValueError("status or kind")
-    score = match.get("score")
+    score, end = match.get("score"), data.get("terminal")
+    if end is not None and not isinstance(end, bool):
+        raise ValueError("terminal")
     return Assigned(
         str(data["system"]), str(data.get("version", "")), str(data["code"]),
         str(data.get("display", "")), str(data.get("class", "")), str(data.get("term", "")),
         str(match.get("kind", Kind.AS_WRITTEN.value)), None if score is None else float(score),
         str(origin.get("by", MACHINE)), str(origin.get("recogniser", "")), status,
-        str(decision.get("by", "")), str(decision.get("at", "")))
+        str(decision.get("by", "")), str(decision.get("at", "")),
+        str(origin.get("package", "")), str(origin.get("package_version", "")), end)
 
 
 def _read_mention(data: Mapping[str, Any]) -> Noted:

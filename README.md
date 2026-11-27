@@ -27,6 +27,11 @@ and in which order. What is here:
 - a command line: `lexcor packages list|import|export|remove`, `lexcor tag FILE [--annotation FILE]`, with
   `--json` and `--language de|en`.
 
+Every run chooses its packages (`--package`, `--without`; `packages=` in the library), and the annotation
+document records exactly what it applied: each package with its version, the fingerprint of its content and of
+the user's changes to it, and the program that ran. `lexcor tag FILE --annotation DOC --repeat` runs again as
+the document records it, or refuses and says which package is no longer the same.
+
 ```python
 import lexcor
 

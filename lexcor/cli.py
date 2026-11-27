@@ -7,10 +7,15 @@
                                 [--supplements URL]
     lexcor packages export PACKAGE FILE [--own-use]
     lexcor packages remove PACKAGE
-    lexcor tag FILE [--package PACKAGE]... [--class CLASS]... [--nested] [--annotation FILE]
+    lexcor tag FILE [--package PACKAGE]... [--without PACKAGE]... [--class CLASS]... [--nested]
+                    [--annotation FILE [--repeat]]
 
-A package is named by its URL or, where only one is called so, by its title.  Names of
-commands and options are English; what a person reads is German or English
+A package is named by its URL or, where only one is called so, by its title.  Every run
+chooses its packages: all of the store, those named with ``--package``, less those named
+with ``--without``.  The annotation document records what the run applied, and ``--repeat``
+runs again exactly as a document records it, or refuses and says what is no longer the same.
+
+Names of commands and options are English; what a person reads is German or English
 (``--language``).  With ``--json`` a command prints one JSON document on standard output and
 nothing else.  lexterm and lexident bring these commands under their own names: :func:`main`
 takes the program's name, the library whose store is the default, a table of spellings and,
@@ -27,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from lexcor import package as packages
-from lexcor.annotation import Annotation, load, packages_of
+from lexcor.annotation import Annotation, differences, load, packages_of
 from lexcor.language import LANGUAGES, LexError, say, set_language
 from lexcor.recognise import Mention, Variants, tag
 from lexcor.store import PackageInfo, Store, StoreError, open_store
@@ -35,6 +40,9 @@ from lexcor.store import PackageInfo, Store, StoreError, open_store
 # what a library hands over to recognise by rules of its own: text, store, packages, classes,
 # and whether a package's shorter terms inside its longer ones are wanted
 Tagger = Callable[[str, Store, Iterable[str] | None, Iterable[str] | None, bool], list[Mention]]
+# what a library hands over to say which packages a run applies, as a document names them
+# (a library that answers from packages of its own where the store holds none says so here)
+Lister = Callable[[Store, list[str] | None], list[dict[str, str]]]
 
 
 def _parser(program: str) -> argparse.ArgumentParser:
@@ -88,6 +96,9 @@ def _parser(program: str) -> argparse.ArgumentParser:
     find.add_argument("--package", action="append", metavar="PACKAGE", help=say(
         "nur dieses Paket, URL oder Titel (mehrfach möglich)",
         "this package only, URL or title (may be given several times)"))
+    find.add_argument("--without", action="append", metavar="PACKAGE", help=say(
+        "dieses Paket nicht anwenden, URL oder Titel (mehrfach möglich)",
+        "do not apply this package, URL or title (may be given several times)"))
     find.add_argument("--class", dest="classes", action="append", metavar="CLASS", help=say(
         "nur diese Klasse (mehrfach möglich)", "this class only (may be given several times)"))
     find.add_argument("--nested", action="store_true", help=say(
@@ -98,14 +109,28 @@ def _parser(program: str) -> argparse.ArgumentParser:
         " Mensch entschieden hat, bleibt",
         "write the annotation document; one that is there is updated, and what a person"
         " decided stays"))
+    find.add_argument("--repeat", action="store_true", help=say(
+        "genau so wiederholen, wie das Annotationsdokument den letzten Lauf festhält (Pakete,"
+        " Klassen, Einstellungen); abbrechen, wenn ein Paket nicht mehr dasselbe ist",
+        "repeat exactly as the annotation document records the last run (packages, classes,"
+        " settings); refuse where a package is no longer the same"))
     return parser
+
+
+def _assignment(a: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {"system": a.system, "version": a.version, "code": a.code,
+                            "display": a.display, "class": a.cls}
+    if a.terminal is not None:
+        data["terminal"] = a.terminal
+    data |= {"term": a.term, "match": {"kind": a.kind.value}}
+    if a.package:
+        data["package"] = {"url": a.package, "version": a.package_version}
+    return data
 
 
 def _mention(mention: Mention) -> dict[str, Any]:
     return {"start": mention.start, "end": mention.end, "exact": mention.text,
-            "assignments": [{"system": a.system, "version": a.version, "code": a.code,
-                             "display": a.display, "class": a.cls, "term": a.term,
-                             "match": {"kind": a.kind.value}} for a in mention.assignments]}
+            "assignments": [_assignment(a) for a in mention.assignments]}
 
 
 def fit_notes(store: Store, info: PackageInfo) -> tuple[dict[str, Any] | None, list[str]]:
@@ -210,32 +235,96 @@ def _import_fhir_package(store: Store, file: Path) -> tuple[dict[str, Any], str]
     return document, "\n".join(lines)
 
 
-def _tag(store: Store, args: argparse.Namespace, tagger: Tagger,
-         made_with: str) -> tuple[dict[str, Any], str]:
-    text = args.file.read_text(encoding="utf-8")
+def _chosen(store: Store, args: argparse.Namespace) -> list[str] | None:
+    """The packages a run applies: all (None), those named, less those left out."""
     chosen = None if args.package is None else [store.find(p) for p in args.package]
-    mentions = tagger(text, store, chosen, args.classes, args.nested)
+    if args.without:
+        left = {store.find(p) for p in args.without}
+        chosen = [url for url in (chosen if chosen is not None
+                                  else [p.url for p in store.packages()]) if url not in left]
+    if chosen is not None and not chosen:
+        raise LexError("no-package-chosen", "Es bleibt kein Paket, das angewandt würde.",
+                       "No package is left to apply.")
+    return chosen
+
+
+_DIFFER = {
+    "missing": ("liegt nicht mehr in der Ablage", "is no longer in the store"),
+    "added": ("ist neu in der Ablage", "is new in the store"),
+    "version": ("hat eine andere Version", "has another version"),
+    "sha256": ("hat einen anderen Inhalt", "has other content"),
+    "overlay": ("hat andere eigene Änderungen", "has other changes of the user's"),
+    "supplements": ("ergänzt ein anderes CodeSystem", "supplements another code system"),
+    "use": ("wird anders verwendet", "is used otherwise"),
+}
+
+
+def _repeated(document: Annotation, store: Store, made_with: str,
+              lister: Lister) -> tuple[list[str] | None, list[str] | None, bool]:
+    """The choice a document records for its last run, if the run can be repeated with
+    the same program and the same packages; else an error that says what differs."""
+    recorded = document.settings
+    chosen = [str(p) for p in recorded.get("packages") or []] or None
+    classes = [str(c) for c in recorded.get("classes") or []] or None
+    found = [(f"Erstellt mit {document.made_with}, jetzt {made_with}",
+              f"Made with {document.made_with}, now {made_with}")
+             ] if document.made_with != made_with else []
+    found += [(f"{url} {_DIFFER[what][0]}", f"{url} {_DIFFER[what][1]}")
+              for url, what in differences(document.packages, lister(store, chosen))]
+    if found:
+        raise LexError(
+            "not-repeatable",
+            "Der Lauf lässt sich nicht genau wiederholen: " + "; ".join(d for d, _e in found) + ".",
+            "The run cannot be repeated exactly: " + "; ".join(e for _d, e in found) + ".")
+    return chosen, classes, bool(recorded.get("nested", False))
+
+
+def _tag(store: Store, args: argparse.Namespace, tagger: Tagger, made_with: str,
+         lister: Lister) -> tuple[dict[str, Any], str]:
+    text = args.file.read_text(encoding="utf-8")
+    held = load(args.annotation) if args.annotation is not None \
+        and args.annotation.exists() else None
+    if args.repeat:
+        if held is None:
+            raise LexError("no-annotation",
+                           "--repeat braucht ein vorhandenes Annotationsdokument (--annotation).",
+                           "--repeat needs an annotation document that is there (--annotation).")
+        if args.package or args.without or args.classes or args.nested:
+            raise LexError("repeat-with-choice",
+                           "--repeat nimmt die Auswahl aus dem Annotationsdokument; bitte keine"
+                           " weitere angeben.",
+                           "--repeat takes the choice from the annotation document; please give"
+                           " no other.")
+        chosen, classes, nested = _repeated(held, store, made_with, lister)
+    else:
+        chosen, classes, nested = _chosen(store, args), args.classes, args.nested
+    mentions = tagger(text, store, chosen, classes, nested)
     if args.annotation is not None:
-        document = load(args.annotation) if args.annotation.exists() else Annotation()
-        document.update(text, mentions, made_with, made_with, packages_of(store, chosen),
-                        {"packages": sorted(chosen or []), "classes": sorted(args.classes or []),
-                         "nested": args.nested})
+        document = held or Annotation()
+        document.update(text, mentions, made_with, made_with, lister(store, chosen),
+                        {"packages": sorted(chosen or []), "classes": sorted(classes or []),
+                         "nested": nested})
         document.save(args.annotation)
+    others = say(", nicht endständig", ", not terminal")
     lines = [f"{m.start}-{m.end}\t{m.text}\t"
-             + "; ".join(" ".join(filter(None, (a.code, a.display, f"({a.kind.value})")))
-                         for a in m.assignments)
+             + "; ".join(" ".join(filter(None, (
+                 a.code, a.display,
+                 f"({a.kind.value}{others if a.terminal is False else ''})")))
+                 for a in m.assignments)
              for m in mentions]
     return {"mentions": [_mention(m) for m in mentions]}, "\n".join(lines)
 
 
 def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
          library: str = "lexcor", variants: Variants = (), tagger: Tagger | None = None,
-         version: str | None = None) -> int:
+         version: str | None = None, lister: Lister | None = None) -> int:
     """Run one command; returns the exit code.  A library built on the core calls this with
     its own name and version (``program``, ``version``; an annotation document names them as
     what made it), ``library`` for the store it keeps in the user's data folder, its table
     of spellings that stand side by side (``variants``) or, where it recognises by rules of
-    its own, the function that tags (``tagger``)."""
+    its own, the function that tags (``tagger``), and where it answers from packages of its
+    own when the store holds none, the function that names the packages a run applies
+    (``lister``)."""
     from lexcor import __version__
 
     made_with = f"{program} {version or __version__}"
@@ -251,7 +340,7 @@ def main(arguments: Sequence[str] | None = None, program: str = "lexcor",
     try:
         with open_store(args.store, library) as store:
             document, text = _packages(store, args) if args.command == "packages" \
-                else _tag(store, args, tagger, made_with)
+                else _tag(store, args, tagger, made_with, lister or packages_of)
     except (LexError, OSError, UnicodeDecodeError) as error:
         if not isinstance(error, LexError):  # a file that is not there or not text
             error = LexError("unreadable", str(error), str(error))

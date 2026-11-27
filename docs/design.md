@@ -250,7 +250,8 @@ The result of recognition and of a person's review is one JSON file beside the t
   "made_with": "lexterm 0.2",
   "text": { "sha256": "…", "length": 1834 },
   "packages": [
-    { "url": "http://fhir.de/CodeSystem/bfarm/icd-10-gm", "version": "2026", "sha256": "…" }
+    { "url": "http://fhir.de/CodeSystem/bfarm/icd-10-gm", "version": "2026", "sha256": "…",
+      "title": "Internationale statistische Klassifikation …", "overlay": "…" }
   ],
   "settings": { "packages": ["…"], "classes": [], "nested": false },
   "mentions": [
@@ -261,7 +262,7 @@ The result of recognition and of a person's review is one JSON file beside the t
         {
           "system": "http://fhir.de/CodeSystem/bfarm/icd-10-gm", "version": "2026",
           "code": "G20", "display": "Primäres Parkinson-Syndrom", "class": "disorder",
-          "term": "Morbus Parkinson", "match": { "kind": "as written" },
+          "terminal": true, "term": "Morbus Parkinson", "match": { "kind": "as written" },
           "origin": { "by": "machine", "recogniser": "lexcor 0.2" },
           "status": "proposed"
         }
@@ -276,7 +277,12 @@ The result of recognition and of a person's review is one JSON file beside the t
 - **`exact`, `prefix`, `suffix`** are the wording and a little of what stands around it, so that a mention is
   found again after the text has changed a little.
 - **`match`** is the kind of match of section 4.3, with `score` for an approximate one.
-- **`origin`** is `machine` with the recogniser, or `person`.
+- **`origin`** is `machine` with the recogniser, or `person`. Where the term that matched is in a supplement
+  (section 3.1), `origin` names that package as well (`package`, `package_version`): the code is the code
+  system's, the wording the supplement's.
+- **`terminal`** says whether the code is terminal in a code system with a hierarchy: no other code of it has
+  it as its parent (the ICD-10-GM codes one codes with). It is left out for a code system without a hierarchy.
+  It marks and filters nothing: an output may leave out what is not terminal.
 - **`status`** is `proposed`, `confirmed` or `rejected`. A decision may carry who made it and when
   (`"decision": {"by": …, "at": …}`): only what the caller says, because the library never reads the clock or
   asks who is at the keyboard, and a caller that must give the same bytes again leaves both out.
@@ -295,6 +301,26 @@ Rules:
 - A mention that is not found again after the text has changed is kept in a list of its own (`lost`) and shown,
   not dropped. One that is found again moves to where its wording stands now, by what stood around it.
 - For reports and logs there is a form with places, classes and statuses and no wording at all.
+
+**Which packages a run applies, and the record of it.** Every run chooses its packages: all of the store,
+those named, less those left out (a window offers them as a list to tick; the command line has `--package` and
+`--without`). The document names exactly what the last run applied (`packages`):
+
+- each package with its `url`, `version`, `title` and `sha256`, the fingerprint of its content, which tells two
+  packages apart that carry the same version;
+- `overlay`, the fingerprint of the user's changes in force for its terms (section 3.3), where there are any:
+  the same package with other changes gives other results;
+- for a supplement the code system it supplements (`supplements`), and that code system as well with `use`
+  `names` where its names and classes were read for the supplement's codes without its own terms being
+  applied;
+- packages that an earlier run applied and that decisions in the document still come from, with `use`
+  `earlier`: every assignment of a machine names a package the list holds, in the version it came from.
+
+`settings` holds what the run was asked for (packages, classes and the settings of the recogniser), and
+`made_with` the program and its version. A run can be **repeated** exactly as a document records it (`tag
+--annotation FILE --repeat`): with the same choice, and only if the program and every package are the same as
+then. Otherwise it refuses and says what differs (a package missing or added, another version, other content,
+other changes of the user's), and writes nothing.
 
 The form is close to what INCEpTION exchanges (UIMA CAS); both libraries read and write that form as well.
 
@@ -410,8 +436,9 @@ recogniser that is switched on has to show there what it adds and what it costs.
    bench are still to come.*
 2. **0.2** The annotation document; the two windows; the place for a library's rules.
    *Built in 0.2.0: the annotation document (`lexcor.annotation`, `lexcor tag FILE --annotation FILE`) and
-   properties of a concept in packages and in the store. In 0.2.4: supplements (section 3.1). Still to come:
-   the windows and the place for a library's rules.*
+   properties of a concept in packages and in the store. In 0.2.4: supplements (section 3.1). In 0.2.5: the
+   record of which packages a run applied, with the user's changes, and the repetition of a run as recorded;
+   whether a code is terminal (section 5). Still to come: the windows and the place for a library's rules.*
 3. **0.3** The interface for recognisers that are switched on, and the first of them: retrieval by meaning as a
    source of proposals in the review window (section 4.7); the search for similar terms; UIMA CAS.
 4. **0.4** Client of a terminology server.

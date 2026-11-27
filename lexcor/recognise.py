@@ -66,7 +66,10 @@ _ORDER = {Kind.AS_WRITTEN: 0, Kind.VARIANT: 1, Kind.INFLECTED: 2, Kind.APPROXIMA
 
 @dataclass(frozen=True)
 class Assignment:
-    """The statement that a mention means a concept, with the term that matched and how."""
+    """The statement that a mention means a concept, with the term that matched and how.
+    ``package`` and ``package_version`` name the package the term is in where that is not
+    the code system itself (a supplement); ``terminal`` says whether the code is terminal in
+    a code system with a hierarchy (None in one without)."""
 
     system: str
     version: str
@@ -76,6 +79,9 @@ class Assignment:
     kind: Kind
     term: str
     score: float | None = None
+    package: str = ""
+    package_version: str = ""
+    terminal: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -228,7 +234,8 @@ class Recogniser:
             end = words[run.first + run.length - 1].end
             assignments = {
                 (e.system, e.code): Assignment(e.system, e.version, e.code, e.display, e.cls,
-                                               kind, e.term)
+                                               kind, e.term, None, e.package, e.package_version,
+                                               e.terminal)
                 for kind, e in reversed(found)}
             mentions.append(Mention(start, end, text[start:end],
                                     tuple(assignments[k] for k in sorted(assignments))))
