@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import tarfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -319,5 +320,50 @@ def read(path: Path, **details: Any) -> Package:
     if path.suffix.lower() in (".csv", ".txt"):
         return read_csv(path, **details)
     raise PackageError("unknown-ending",
-                       f"Unbekannte Dateiendung: {path.name} (.json, .csv, .txt)",
-                       f"Unknown file ending: {path.name} (.json, .csv, .txt)")
+                       f"Unbekannte Dateiendung: {path.name} (.json, .csv, .txt, .tgz)",
+                       f"Unknown file ending: {path.name} (.json, .csv, .txt, .tgz)")
+
+
+def is_fhir_package(path: Path) -> bool:
+    """Whether a file is a FHIR package by its ending (``.tgz``, ``.tar.gz``)."""
+    name = Path(path).name.lower()
+    return name.endswith((".tgz", ".tar.gz"))
+
+
+def read_fhir_package(path: Path) -> tuple[list[Package], list[tuple[str, str]]]:
+    """Read the CodeSystems of a FHIR package, the form in which terminologies are published
+    for download (an npm package: a ``.tgz`` with its resources as JSON files).  Returns the
+    packages, by URL, and what was left out with the reason: a CodeSystem that names its
+    concepts elsewhere (``content: not-present``), a supplement, one without concepts.
+    Nothing is unpacked onto the disk."""
+    packages: dict[str, Package] = {}
+    skipped: list[tuple[str, str]] = []
+    try:
+        with tarfile.open(path, "r:*") as archive:
+            for member in archive:
+                if not member.isfile() or not member.name.lower().endswith(".json"):
+                    continue
+                file = archive.extractfile(member)
+                if file is None:
+                    continue
+                try:
+                    resource = json.loads(file.read().decode("utf-8-sig"))
+                except ValueError:
+                    continue
+                if not isinstance(resource, dict) or resource.get("resourceType") != "CodeSystem":
+                    continue
+                name = str(resource.get("url") or member.name)
+                if resource.get("content") in ("not-present", "supplement", "example"):
+                    skipped.append((name, str(resource["content"])))
+                elif not resource.get("concept"):
+                    skipped.append((name, "empty"))
+                else:
+                    package = from_codesystem(resource)
+                    packages[package.url] = package
+    except (OSError, tarfile.TarError) as error:
+        raise PackageError("unreadable", f"{path} lässt sich nicht als FHIR-Paket lesen: {error}",
+                           f"{path} cannot be read as a FHIR package: {error}") from error
+    if not packages and not skipped:
+        raise PackageError("no-codesystem", "Das FHIR-Paket enthält kein CodeSystem.",
+                           "The FHIR package holds no CodeSystem.")
+    return [packages[url] for url in sorted(packages)], sorted(skipped)

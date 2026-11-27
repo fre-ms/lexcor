@@ -54,8 +54,10 @@ def _parser(program: str) -> argparse.ArgumentParser:
     actions = group.add_subparsers(dest="action", required=True)
     actions.add_parser("list", help=say("Pakete der Ablage zeigen", "show the store's packages"))
     add = actions.add_parser("import", help=say(
-        "ein Paket aufnehmen (FHIR CodeSystem als .json, Liste als .csv oder .txt)",
-        "take a package in (FHIR CodeSystem as .json, a list as .csv or .txt)"))
+        "ein Paket aufnehmen (FHIR CodeSystem als .json, FHIR-Paket als .tgz, Liste als .csv"
+        " oder .txt)",
+        "take a package in (FHIR CodeSystem as .json, FHIR package as .tgz, a list as .csv or"
+        " .txt)"))
     add.add_argument("file", type=Path)
     add.add_argument("--url", default="", help=say(
         "URI einer Liste (sonst vergibt die Ablage eine eigene)",
@@ -112,6 +114,8 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
         text = "\n".join(lines) if lines else say("Die Ablage enthält kein Paket.",
                                                   "The store holds no package.")
         return {"packages": [vars(p) for p in found]}, text
+    if args.action == "import" and packages.is_fhir_package(args.file):
+        return _import_fhir_package(store, args.file)
     if args.action == "import":
         read = packages.read(args.file, url=args.url, version=args.version, title=args.title,
                              language=args.term_language, redistributable=args.redistributable) \
@@ -140,6 +144,26 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
     url = store.find(args.package)
     store.remove_package(url)
     return {"removed": url}, say(f"Entfernt: {url}", f"Removed: {url}")
+
+
+def _import_fhir_package(store: Store, file: Path) -> tuple[dict[str, Any], str]:
+    """Take in every CodeSystem of a FHIR package and say which were left out and why."""
+    found, skipped = packages.read_fhir_package(file)
+    infos = [store.add_package(package) for package in found]
+    reasons = {"not-present": say("nennt seine Begriffe nicht selbst",
+                                  "does not hold its concepts"),
+               "supplement": say("ist eine Ergänzung", "is a supplement"),
+               "example": say("ist nur ein Beispiel", "is an example only"),
+               "empty": say("enthält keine Begriffe", "holds no concepts")}
+    lines = [say(f"Aufgenommen: {i.title or i.url} mit {i.concepts} Begriffen in {i.terms}"
+                 " Schreibweisen.",
+                 f"Taken in: {i.title or i.url} with {i.concepts} concepts in {i.terms}"
+                 " wordings.") for i in infos]
+    lines += [say(f"Ausgelassen: {url} ({reasons[reason]}).",
+                  f"Left out: {url} ({reasons[reason]}).") for url, reason in skipped]
+    document = {"packages": [vars(i) for i in infos],
+                "skipped": [{"url": url, "reason": reason} for url, reason in skipped]}
+    return document, "\n".join(lines)
 
 
 def _tag(store: Store, args: argparse.Namespace, tagger: Tagger,

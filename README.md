@@ -14,7 +14,8 @@ medical and nothing about persons.
 The project is at its second stage (0.2): the windows for review are still to come. The [design](docs/design.md) says what is to be built
 and in which order. What is here:
 
-- `lexcor.package`: packages as FHIR CodeSystem (R4, JSON) and as CSV;
+- `lexcor.package`: packages as FHIR CodeSystem (R4, JSON), read from FHIR packages (`.tgz`) as well, and as
+  CSV;
 - `lexcor.store`: one SQLite file with the packages and a user's changes to them, kept as an overlay;
 - `lexcor.recognise`: `tag`, recognition in four stages with the kinds of match (as written, spelling variant,
   inflected);

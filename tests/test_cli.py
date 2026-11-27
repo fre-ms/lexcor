@@ -149,3 +149,34 @@ def test_tagging_writes_the_annotation_document_and_keeps_decisions(
                  "-o", str(files / "other.json")], program="lexsample", version="7.1") == 0
     assert load_annotation(files / "other.json").made_with == "lexsample 7.1"
     capsys.readouterr()
+
+
+def test_a_fhir_package_is_taken_in_with_all_its_codesystems(
+        files: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import io
+    import tarfile
+
+    systems = {
+        "package/CodeSystem-a.json": {
+            "resourceType": "CodeSystem", "url": "http://example.org/a", "version": "1",
+            "title": "A", "content": "complete", "language": "de",
+            "concept": [{"code": "D1", "display": "Hypertonie"}]},
+        "package/CodeSystem-b.json": {
+            "resourceType": "CodeSystem", "url": "http://example.org/b", "content": "not-present"},
+    }
+    archive_file = files / "example-1.0.0.tgz"
+    with tarfile.open(archive_file, "w:gz") as archive:
+        for name, resource in systems.items():
+            data = json.dumps(resource).encode("utf-8")
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    assert run(files, "--json", "packages", "import", str(archive_file)) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert [p["url"] for p in answer["packages"]] == ["http://example.org/a"]
+    assert answer["skipped"] == [{"url": "http://example.org/b", "reason": "not-present"}]
+    assert run(files, "--language", "en", "packages", "import", str(archive_file)) == 0
+    said = capsys.readouterr().out
+    assert "Taken in: A with 1 concepts" in said and "Left out: http://example.org/b" in said
+    assert run(files, "--json", "tag", str(files / "letter.txt")) == 0
+    assert [m["exact"] for m in json.loads(capsys.readouterr().out)["mentions"]] == ["Hypertonien"]

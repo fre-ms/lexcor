@@ -157,3 +157,42 @@ def test_a_concept_carries_what_else_its_source_says(tmp_path: Path) -> None:
         "Tannengrund"]
     read = read_csv(file, url=package.url)
     assert [c.properties for c in read.concepts] == [{"beds": "120", "town": "Tannengrund"}, {}]
+
+
+def test_the_codesystems_of_a_fhir_package_are_read(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    from lexcor import read_fhir_package
+
+    resources = {
+        "package/package.json": {"name": "example.terminology", "version": "2026.0.0"},
+        "package/CodeSystem-sample.json": to_codesystem(sample()),
+        "package/CodeSystem-elsewhere.json": {
+            "resourceType": "CodeSystem", "url": "http://example.org/elsewhere",
+            "content": "not-present"},
+        "package/CodeSystem-addition.json": {
+            "resourceType": "CodeSystem", "url": "http://example.org/addition",
+            "content": "supplement", "concept": [{"code": "X"}]},
+        "package/CodeSystem-hollow.json": {
+            "resourceType": "CodeSystem", "url": "http://example.org/hollow",
+            "content": "complete"},
+        "package/ValueSet-sample.json": {"resourceType": "ValueSet", "url": "http://example.org/v"},
+    }
+    file = tmp_path / "example.terminology-2026.0.0.tgz"
+    with tarfile.open(file, "w:gz") as archive:
+        for name, resource in resources.items():
+            data = json.dumps(resource).encode("utf-8")
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    found, skipped = read_fhir_package(file)
+    assert found == [tidy(sample())]
+    assert skipped == [("http://example.org/addition", "supplement"),
+                       ("http://example.org/elsewhere", "not-present"),
+                       ("http://example.org/hollow", "empty")]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [file.name]  # nothing unpacked
+    (tmp_path / "broken.tgz").write_bytes(b"not an archive")
+    with pytest.raises(PackageError) as broken:
+        read_fhir_package(tmp_path / "broken.tgz")
+    assert broken.value.kind == "unreadable"
