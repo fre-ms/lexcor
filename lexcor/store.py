@@ -287,11 +287,14 @@ class Store:
         self.connection.commit()
 
     # -- packages ----------------------------------------------------------------------------------
-    def add_package(self, package: Package) -> PackageInfo:
+    def add_package(self, package: Package, ticked: bool | None = None) -> PackageInfo:
         """Take a package in.  One with the same URL is replaced, whatever its version; the
         overlay of that URL stays in force.  A list without a URL gets one of this store's.
         A supplement is taken in like any package, whether or not the code system it
-        supplements is here (:meth:`fit` says how the two go together)."""
+        supplements is here (:meth:`fit` says how the two go together).  ``ticked`` says
+        whether runs that follow the person's choice apply it; None leaves the choice as
+        it is: a package new to the store is ticked, a new version of one that was unticked
+        stays unticked."""
         self._writable()
         package = tidy(package)
         package.url = package.url or self.local_url(package.name or package.title)
@@ -320,6 +323,10 @@ class Store:
             cursor.executemany(
                 "INSERT INTO property (concept, name, value) VALUES (?, ?, ?)",
                 [(row, k, v) for k, v in concept.properties.items()])
+        if ticked is not None:
+            off = set(self.switched_off())
+            (off.discard if ticked else off.add)(package.url)
+            self._remember(off)
         self._changed()
         return self.info(package.url)
 

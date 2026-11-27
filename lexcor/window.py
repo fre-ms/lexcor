@@ -76,9 +76,11 @@ def _number(count: int) -> str:
     return text.replace(",", ".") if language() == "de" else text
 
 
-def take_in(store: Store, path: Path, reader: Reader = CORE) -> list[PackageInfo]:
-    """Read a file or folder in a reader's form and take its packages into the store."""
-    return [store.add_package(package) for package in reader.read(Path(path))]
+def take_in(store: Store, path: Path, reader: Reader = CORE,
+            ticked: bool | None = None) -> list[PackageInfo]:
+    """Read a file or folder in a reader's form and take its packages into the store,
+    ticked or not (None: as :meth:`lexcor.store.Store.add_package` keeps it)."""
+    return [store.add_package(package, ticked) for package in reader.read(Path(path))]
 
 
 class _Taking(QtCore.QThread):
@@ -87,14 +89,14 @@ class _Taking(QtCore.QThread):
     done = QtCore.Signal(list)
     failed = QtCore.Signal(str)
 
-    def __init__(self, store: Store, path: Path, reader: Reader) -> None:
+    def __init__(self, store: Store, path: Path, reader: Reader, ticked: bool) -> None:
         super().__init__()
-        self.store, self.path, self.reader = store, path, reader
+        self.store, self.path, self.reader, self.ticked = store, path, reader, ticked
 
     def run(self) -> None:
         """Read and take in; say how it went."""
         try:
-            infos = take_in(self.store, self.path, self.reader)
+            infos = take_in(self.store, self.path, self.reader, self.ticked)
         except (LexError, OSError, ValueError) as error:
             self.failed.emit(str(error))
         else:
@@ -270,8 +272,15 @@ class PackageWindow(QtWidgets.QWidget):
         every.clicked.connect(lambda: self.list.tick_all(True))
         none = QtWidgets.QPushButton(say("Keines", "None"))
         none.clicked.connect(lambda: self.list.tick_all(False))
-        for button in (self.take, self.write, self.drop):
-            row.addWidget(button)
+        self.apply_new = QtWidgets.QCheckBox(say("gleich anwenden", "apply at once"))
+        self.apply_new.setChecked(True)
+        self.apply_new.setToolTip(say(
+            "Was aufgenommen wird, ist angekreuzt; ohne dieses Häkchen wird es erst"
+            " angewandt, wenn Sie es ankreuzen",
+            "What is taken in is ticked; without this tick it is applied only once you tick"
+            " it"))
+        for widget in (self.take, self.apply_new, self.write, self.drop):
+            row.addWidget(widget)
         row.addStretch(1)
         for button in (every, none):
             row.addWidget(button)
@@ -297,10 +306,11 @@ class PackageWindow(QtWidgets.QWidget):
             self.take_in(Path(chosen), reader)
 
     def take_in(self, path: Path, reader: Reader = CORE) -> _Taking:
-        """Take a file or folder in beside the window; the window waits meanwhile."""
+        """Take a file or folder in beside the window, applied at once or not yet as the
+        box "apply at once" says; the window waits meanwhile."""
         self.setEnabled(False)
         self.say_status(say(f"Wird aufgenommen: {path.name} …", f"Taking in: {path.name} …"))
-        self.worker = _Taking(self.store, path, reader)
+        self.worker = _Taking(self.store, path, reader, self.apply_new.isChecked())
         self.worker.done.connect(self._taken)
         self.worker.failed.connect(self._failed)
         self.worker.start()
@@ -309,7 +319,8 @@ class PackageWindow(QtWidgets.QWidget):
     def _taken(self, infos: list[PackageInfo]) -> None:
         from lexcor.cli import fit_notes
 
-        lines = []
+        lines = [] if self.apply_new.isChecked() else [say(
+            "Noch nicht angewandt: zum Anwenden ankreuzen.", "Not applied yet: tick to apply.")]
         for info in infos:
             lines.append(say(f"Aufgenommen: {info.title or info.url}, {_number(info.concepts)}"
                              f" Begriffe in {_number(info.terms)} Schreibweisen.",

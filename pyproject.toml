@@ -1,6 +1,6 @@
 [project]
 name = "lexcor"
-version = "0.2.6"
+version = "0.2.7"
 description = "Packages of terms, their store and their recognition in German text: the common core of lexterm and lexident."
 readme = "README.md"
 requires-python = ">=3.12"

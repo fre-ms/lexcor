@@ -145,12 +145,20 @@ def test_the_window_takes_in_beside_itself(app: object, store: Store, tmp_path: 
                     concepts=[Concept("E1", "Extraleiden")])
     write_codesystem(extra, tmp_path / "extra.json")
     window = PackageWindow(store, sources="<p><a href='https://example.org/'>Where</a></p>")
+    window.apply_new.setChecked(False)
     worker = window.take_in(tmp_path / "extra.json")
     assert not window.isEnabled()
     worker.wait(10_000)
     qt.QApplication.processEvents()
     assert window.isEnabled() and "Taken in: Extra, 1 concepts in 1 wordings." in \
         window.status.text()
+    assert window.status.text().startswith("Not applied yet")
+    assert extra.url in store.switched_off() and extra.url not in window.list.chosen()
+    window.apply_new.setChecked(True)
+    worker = window.take_in(tmp_path / "extra.json")  # the box decides, both ways
+    worker.wait(10_000)
+    qt.QApplication.processEvents()
+    assert extra.url in window.list.chosen()
     assert "Extra" in [window.list.topLevelItem(i).text(0)
                        for i in range(window.list.topLevelItemCount())]
     (tmp_path / "broken.json").write_text("{", encoding="utf-8")
@@ -176,3 +184,18 @@ def test_the_window_writes_out_and_takes_out(app: object, store: Store, tmp_path
     window.remove(FLAT)
     assert [p.url for p in store.packages()] == [TREE, INDEX]
     assert window.status.text() == "Taken out: Flat"
+
+
+def test_a_package_is_taken_in_ticked_or_not(store: Store, tmp_path: Path,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    store.switch(FLAT, False)
+    store.add_package(packages()[2])  # a new version of an unticked package stays unticked
+    assert FLAT in store.switched_off()
+    store.add_package(packages()[2], ticked=True)
+    assert store.chosen() is None
+    store.add_package(packages()[0], ticked=False)
+    assert store.switched_off() == [TREE]
+    write_codesystem(packages()[2], tmp_path / "flat.json")
+    assert main(["--store", str(store.path), "--language", "en", "packages", "import",
+                 str(tmp_path / "flat.json"), "--off"]) == 0
+    assert store.switched_off() == [FLAT, TREE]

@@ -334,9 +334,11 @@ request), and marks a place by hand that was not recognised. "Confirm all of thi
 **Packages**: the packages with licence, version and number of terms; search, edit, add and delete terms;
 import and export. Every package has a box to **tick for the runs that follow**: what is ticked is applied, and
 the annotation document of a run records what that was (section 5). A supplement stands below the code system
-it supplements, with a box of its own. The window keeps the ticks in the store, so that the command line
-follows them as well (`packages on`/`off` without a window); a program that keeps its choice itself embeds
-the list without that.
+it supplements, with a box of its own. The ticks are the store's, and so they hold for every program that reads
+the store: the command line follows them as well (`packages on`/`off` without a window), and so does an
+application such as PseudonyMed, which protects with the ticked lists of lexterm's store. A package is
+ticked when it comes into the store; it can be taken in unticked (`packages import --off`, the box "apply at
+once" in the window), and a new version of a package that was unticked stays unticked.
 
 *Built in 0.2.6* (`lexcor.window`, `lexcor packages window`; PySide6 as the extra `lexcor[window]`): the list
 with its ticks, taking a file in beside the window (a library adds the forms it reads, `Reader`), writing a
@@ -447,7 +449,8 @@ recogniser that is switched on has to show there what it adds and what it costs.
    *Built in 0.2.0: the annotation document (`lexcor.annotation`, `lexcor tag FILE --annotation FILE`) and
    properties of a concept in packages and in the store. In 0.2.4: supplements (section 3.1). In 0.2.5: the
    record of which packages a run applied, with the user's changes, and the repetition of a run as recorded;
-   whether a code is terminal (section 5). In 0.2.6: the package window with the person's choice (section 6).
+   whether a code is terminal (section 5). In 0.2.6: the package window with the person's choice (section 6);
+   in 0.2.7 a package can be taken in unticked.
    Still to come: the review window and the place for a library's rules.*
 3. **0.3** The interface for recognisers that are switched on, and the first of them: retrieval by meaning as a
    source of proposals in the review window (section 4.7); the search for similar terms; UIMA CAS.

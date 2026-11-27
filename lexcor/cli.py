@@ -4,7 +4,7 @@
 
     lexcor packages list
     lexcor packages import FILE [--url URL] [--version V] [--title T] [--redistributable]
-                                [--supplements URL]
+                                [--supplements URL] [--off]
     lexcor packages export PACKAGE FILE [--own-use]
     lexcor packages remove PACKAGE
     lexcor packages on PACKAGE... | off PACKAGE...
@@ -86,6 +86,9 @@ def _parser(program: str) -> argparse.ArgumentParser:
     add.add_argument("--supplements", default="", metavar="URL", help=say(
         "die Liste ist eine Ergänzung: weitere Bezeichnungen zu den Kodes dieses CodeSystems",
         "the list is a supplement: further wordings for the codes of this code system"))
+    add.add_argument("--off", action="store_true", help=say(
+        "aufnehmen, aber noch nicht anwenden (nicht angekreuzt)",
+        "take in, but do not apply yet (unticked)"))
     out = actions.add_parser("export", help=say(
         "ein Paket schreiben (.json oder .csv)", "write a package (.json or .csv)"))
     out.add_argument("package", help=say("URL oder Titel", "URL or title"))
@@ -195,13 +198,13 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
             say(f"Angekreuzt: {u}", f"Ticked: {u}") if args.action == "on"
             else say(f"Abgewählt: {u}", f"Unticked: {u}") for u in urls)
     if args.action == "import" and packages.is_fhir_package(args.file):
-        return _import_fhir_package(store, args.file)
+        return _import_fhir_package(store, args.file, False if args.off else None)
     if args.action == "import":
         read = packages.read(args.file, url=args.url, version=args.version, title=args.title,
                              language=args.term_language, redistributable=args.redistributable,
                              supplements=args.supplements) \
             if args.file.suffix.lower() != ".json" else packages.read(args.file)
-        info = store.add_package(read)
+        info = store.add_package(read, False if args.off else None)
         fit, notes = fit_notes(store, info)
         document = {"package": vars(info)} | ({} if fit is None else {"fit": fit})
         return document, "\n".join([say(
@@ -229,10 +232,11 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
     return {"removed": url}, say(f"Entfernt: {url}", f"Removed: {url}")
 
 
-def _import_fhir_package(store: Store, file: Path) -> tuple[dict[str, Any], str]:
+def _import_fhir_package(store: Store, file: Path,
+                         ticked: bool | None = None) -> tuple[dict[str, Any], str]:
     """Take in every CodeSystem of a FHIR package and say which were left out and why."""
     found, skipped = packages.read_fhir_package(file)
-    infos = [store.add_package(package) for package in found]
+    infos = [store.add_package(package, ticked) for package in found]
     reasons = {"not-present": say("nennt seine Begriffe nicht selbst",
                                   "does not hold its concepts"),
                "supplement": say("ist eine Ergänzung, die nicht sagt, was sie ergänzt",
