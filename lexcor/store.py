@@ -7,6 +7,10 @@ another class) are kept as an **overlay** beside the package and never written i
 new version of the package replaces the package and leaves the overlay in force (design,
 section 3.3).  A counter changes with every edit, so that an index built from the store is
 rebuilt only when needed.
+
+A **supplement** is a package of its own in the store, and its terms code in the system it
+supplements: recognition sees them as terms of that system's codes, with the name and class
+the system gives the code where the store holds the system as well.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from lexcor.language import LexError
-from lexcor.package import KINDS, Concept, Package, Term, tidy
+from lexcor.package import KINDS, Concept, Package, Term, supplemented, tidy
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS package (
@@ -36,7 +40,8 @@ CREATE TABLE IF NOT EXISTS package (
     language        TEXT NOT NULL DEFAULT '',
     redistributable INTEGER NOT NULL DEFAULT 0,
     sha256          TEXT NOT NULL,
-    added           TEXT NOT NULL
+    added           TEXT NOT NULL,
+    supplements     TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS concept (
     id      INTEGER PRIMARY KEY,
@@ -95,6 +100,36 @@ class PackageInfo:
     sha256: str
     concepts: int
     terms: int
+    supplements: str = ""
+
+
+@dataclass(frozen=True)
+class Fit:
+    """How a supplement fits the code system it supplements, as a store holds it: the
+    system, the version of it the supplement names (empty for any), the version the store
+    holds (None where it holds none), and how many codes of the supplement the system held
+    does not have."""
+
+    system: str
+    wanted: str
+    held: str | None
+    unknown: int
+
+
+# of each code system held that a supplement names: its version, and name and class by code
+Held = dict[str, tuple[str, dict[str, tuple[str, str]]]]
+
+
+def _coded(named: str, code: str, display: str, cls: str,
+           bases: Held) -> tuple[str, str, str, str]:
+    """Where a term of a supplement codes: in the system it supplements.  Where that system
+    is held and has the code, with its version and the name and class it gives the code;
+    else with the version the supplement names and what the supplement says itself."""
+    system, version = supplemented(named)
+    held = bases.get(system)
+    if held and code in held[1]:
+        return system, held[0], *held[1][code]
+    return system, version, display, cls
 
 
 @dataclass(frozen=True)
@@ -169,16 +204,26 @@ class Store:
                 self.connection = sqlite3.connect(
                     f"{self.path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
                 self.connection.execute("SELECT COUNT(*) FROM package").fetchone()
-                return
-            if not self.memory:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.connection = sqlite3.connect(str(path), check_same_thread=False)
+            else:
+                if not self.memory:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.connection = sqlite3.connect(str(path), check_same_thread=False)
         except (sqlite3.Error, OSError) as error:
             raise StoreError("no-store", f"Die Ablage {self.path.name} lässt sich nicht öffnen.",
                              f"The store {self.path.name} cannot be opened.") from error
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.executescript(SCHEMA)
-        self.connection.commit()
+        if not readonly:
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self.connection.executescript(SCHEMA)
+            if not self._names_supplements():  # a store from before there were supplements
+                self.connection.execute(
+                    "ALTER TABLE package ADD COLUMN supplements TEXT NOT NULL DEFAULT ''")
+            self.connection.commit()
+        # a store written before then and opened for reading only holds no supplement
+        self._supplements = "p.supplements" if self._names_supplements() else "''"
+
+    def _names_supplements(self) -> bool:
+        return any(row[1] == "supplements"
+                   for row in self.connection.execute("PRAGMA table_info(package)"))
 
     @property
     def key(self) -> str:
@@ -217,7 +262,9 @@ class Store:
     # -- packages ----------------------------------------------------------------------------------
     def add_package(self, package: Package) -> PackageInfo:
         """Take a package in.  One with the same URL is replaced, whatever its version; the
-        overlay of that URL stays in force.  A list without a URL gets one of this store's."""
+        overlay of that URL stays in force.  A list without a URL gets one of this store's.
+        A supplement is taken in like any package, whether or not the code system it
+        supplements is here (:meth:`fit` says how the two go together)."""
         self._writable()
         package = tidy(package)
         package.url = package.url or self.local_url(package.name or package.title)
@@ -225,10 +272,11 @@ class Store:
         cursor.execute("DELETE FROM package WHERE url = ?", (package.url,))
         cursor.execute(
             "INSERT INTO package (url, version, name, title, publisher, copyright, language,"
-            " redistributable, sha256, added) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " redistributable, sha256, added, supplements)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (package.url, package.version, package.name, package.title, package.publisher,
              package.copyright, package.language, int(package.redistributable),
-             package.sha256(), _now()))
+             package.sha256(), _now(), package.supplements))
         number = cursor.lastrowid
         for concept in package.concepts:
             cursor.execute(
@@ -297,8 +345,9 @@ class Store:
             "SELECT p.url, p.version, p.title, p.publisher, p.copyright, p.redistributable,"
             " p.sha256, (SELECT COUNT(*) FROM concept c WHERE c.package = p.id),"
             " (SELECT COUNT(*) FROM term t JOIN concept c ON c.id = t.concept"
-            "  WHERE c.package = p.id) FROM package p ORDER BY p.title, p.url")
-        return [PackageInfo(r[0], r[1], r[2], r[3], r[4], bool(r[5]), r[6], r[7], r[8])
+            f"  WHERE c.package = p.id), {self._supplements} FROM package p"
+            " ORDER BY p.title, p.url")
+        return [PackageInfo(r[0], r[1], r[2], r[3], r[4], bool(r[5]), r[6], r[7], r[8], r[9])
                 for r in rows]
 
     def info(self, url: str) -> PackageInfo:
@@ -312,8 +361,9 @@ class Store:
     def package(self, url: str) -> Package:
         """A package as it came, without the overlay: what an export writes."""
         row = self.connection.execute(
-            "SELECT id, url, version, name, title, publisher, copyright, language,"
-            " redistributable FROM package WHERE url = ?", (url,)).fetchone()
+            "SELECT p.id, p.url, p.version, p.name, p.title, p.publisher, p.copyright,"
+            f" p.language, p.redistributable, {self._supplements} FROM package p"
+            " WHERE p.url = ?", (url,)).fetchone()
         if row is None:
             raise StoreError("no-package", f"Kein Paket mit der URL {url}.",
                              f"No package with the URL {url}.")
@@ -333,7 +383,8 @@ class Store:
                 concepts[number].properties[name] = value
         return tidy(Package(url=row[1], version=row[2], name=row[3], title=row[4],
                             publisher=row[5], copyright=row[6], language=row[7],
-                            redistributable=bool(row[8]), concepts=list(concepts.values())))
+                            redistributable=bool(row[8]), concepts=list(concepts.values()),
+                            supplements=row[9]))
 
     def _has_properties(self) -> bool:
         """A store written before concepts had properties, and opened for reading only, has
@@ -351,6 +402,37 @@ class Store:
             " JOIN package p ON p.id = c.package WHERE p.url = ? AND c.code = ?"
             " ORDER BY y.name", (url, code)).fetchall())
 
+    # -- supplements -------------------------------------------------------------------------------
+    def _bases(self) -> Held:
+        """The code systems that supplements of this store name, as far as it holds them."""
+        bases: Held = {}
+        named = self.connection.execute(
+            f"SELECT DISTINCT {self._supplements} FROM package p").fetchall()
+        for system in sorted({supplemented(str(n))[0] for (n,) in named if n}):
+            row = self.connection.execute(
+                f"SELECT p.id, p.version FROM package p WHERE p.url = ?"
+                f" AND {self._supplements} = ''", (system,)).fetchone()
+            if row is not None:
+                bases[system] = (row[1], {
+                    code: (display, cls) for code, display, cls in self.connection.execute(
+                        "SELECT code, display, class FROM concept WHERE package = ?", (row[0],))})
+        return bases
+
+    def fit(self, url: str) -> Fit | None:
+        """How the supplement with this URL fits the code system it supplements, as this
+        store holds it; None for a package that is no supplement."""
+        named = self.info(url).supplements
+        if not named:
+            return None
+        system, wanted = supplemented(named)
+        held = self._bases().get(system)
+        if held is None:
+            return Fit(system, wanted, None, 0)
+        codes = self.connection.execute(
+            "SELECT c.code FROM concept c JOIN package p ON p.id = c.package WHERE p.url = ?",
+            (url,))
+        return Fit(system, wanted, held[0], sum(1 for (code,) in codes if code not in held[1]))
+
     # -- what recognition reads --------------------------------------------------------------------
     def entries(self, packages: Iterable[str] | None = None,
                 classes: Iterable[str] | None = None,
@@ -358,7 +440,9 @@ class Store:
         """Every term with its concept, the overlay applied: hidden terms and concepts are
         left out, added terms are in, classes are as the user set them.  ``packages`` (URLs),
         ``classes`` and ``languages`` narrow the choice; a term that names no language passes
-        every choice of languages."""
+        every choice of languages.  A term of a supplement is a term of the code it names in
+        the system supplemented, and the overlay of that system holds for it; a supplement is
+        chosen by its own URL, like any package."""
         wanted = None if packages is None else set(packages)
         allowed = None if classes is None else set(classes)
         spoken = _spoken(languages)
@@ -373,14 +457,17 @@ class Store:
                 added.setdefault((url, code), []).append((value, language, kind))
             else:
                 moved[(url, code)] = value
+        bases = self._bases()
         rows = self.connection.execute(
-            "SELECT p.url, p.version, c.code, c.display, c.class, t.value, t.language, t.kind"
-            " FROM term t JOIN concept c ON c.id = t.concept"
+            f"SELECT p.url, {self._supplements}, p.version, c.code, c.display, c.class, t.value,"
+            " t.language, t.kind FROM term t JOIN concept c ON c.id = t.concept"
             " JOIN package p ON p.id = c.package ORDER BY p.url, c.code, t.value, t.language")
         seen: set[tuple[str, str]] = set()
-        for url, version, code, display, cls, value, language, kind in rows:
+        for url, named, version, code, display, cls, value, language, kind in rows:
             if wanted is not None and url not in wanted:
                 continue
+            if named:
+                url, version, display, cls = _coded(named, code, display, cls, bases)
             cls = moved.get((url, code), cls)
             if (url, code, "", "") in hidden or (allowed is not None and cls not in allowed):
                 continue
@@ -398,9 +485,13 @@ class Store:
 
     # -- overlay -----------------------------------------------------------------------------------
     def _known(self, url: str, code: str) -> None:
+        """A change needs its concept: a code of the package, or one a supplement to it
+        names."""
         found = self.connection.execute(
             "SELECT 1 FROM concept c JOIN package p ON p.id = c.package"
-            " WHERE p.url = ? AND c.code = ?", (url, code)).fetchone()
+            f" WHERE c.code = ? AND (p.url = ? OR {self._supplements} = ?"
+            f" OR substr({self._supplements}, 1, length(?) + 1) = ? || '|')",
+            (code, url, url, url, url)).fetchone()
         if not found:
             raise StoreError("no-concept",
                              f"Das Paket {url} hat keinen Begriff mit dem Code {code}.",
@@ -492,14 +583,24 @@ def entries_of(packages: Iterable[Package], classes: Iterable[str] | None = None
     that tags with the packages it brings, and writes nothing anywhere."""
     allowed = None if classes is None else set(classes)
     spoken = _spoken(languages)
-    for package in packages:
-        for concept in tidy(package).concepts:
-            if allowed is not None and concept.cls not in allowed:
+    given = [tidy(package) for package in packages]
+    named = {supplemented(package)[0] for package in given if package.supplements}
+    bases: Held = {package.url: (package.version,
+                                 {c.code: (c.display, c.cls) for c in package.concepts})
+                   for package in given if package.url in named and not package.supplements}
+    for package in given:
+        for concept in package.concepts:
+            url, version, display, cls = (package.url, package.version, concept.display,
+                                          concept.cls)
+            if package.supplements:
+                url, version, display, cls = _coded(package.supplements, concept.code, display,
+                                                    cls, bases)
+            if allowed is not None and cls not in allowed:
                 continue
             for term in concept.terms:
                 if _speaks(term.language, spoken):
-                    yield Entry(term.value, package.url, package.version, concept.code,
-                                concept.display, concept.cls, term.language, term.kind)
+                    yield Entry(term.value, url, version, concept.code, display, cls,
+                                term.language, term.kind)
 
 
 def open_store(path: str | Path | None = None, library: str = "lexcor",

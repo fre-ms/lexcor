@@ -24,6 +24,7 @@ from lexcor.package import (
     read_codesystem,
     read_csv,
     read_fhir_package,
+    supplemented,
     tidy,
     write_codesystem,
     write_csv,
@@ -33,6 +34,7 @@ from lexcor.recognise import Assignment, Kind, Mention, Recogniser, recogniser, 
 from lexcor.store import (
     Change,
     Entry,
+    Fit,
     PackageInfo,
     Store,
     StoreError,
@@ -40,13 +42,14 @@ from lexcor.store import (
     open_store,
 )
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 __all__ = [
-    "Annotation", "AnnotationError", "Assignment", "Change", "Concept", "Cover", "Entry", "Kind",
-    "LexError", "Mention", "annotate", "load_annotation",
+    "Annotation", "AnnotationError", "Assignment", "Change", "Concept", "Cover", "Entry", "Fit",
+    "Kind", "LexError", "Mention", "annotate", "load_annotation",
     "Package", "PackageError", "PackageInfo", "Recogniser", "Store", "StoreError", "Term",
     "cover", "covers", "entries_of", "open_store", "read_codesystem", "read_csv",
     "read_fhir_package", "read_package",
-    "recogniser", "say", "set_language", "tag", "tidy", "write_codesystem", "write_csv",
+    "recogniser", "say", "set_language", "supplemented", "tag", "tidy", "write_codesystem",
+    "write_csv",
 ]

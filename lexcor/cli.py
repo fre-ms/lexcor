@@ -4,6 +4,7 @@
 
     lexcor packages list
     lexcor packages import FILE [--url URL] [--version V] [--title T] [--redistributable]
+                                [--supplements URL]
     lexcor packages export PACKAGE FILE [--own-use]
     lexcor packages remove PACKAGE
     lexcor tag FILE [--package PACKAGE]... [--class CLASS]... [--nested] [--annotation FILE]
@@ -29,7 +30,7 @@ from lexcor import package as packages
 from lexcor.annotation import Annotation, load, packages_of
 from lexcor.language import LANGUAGES, LexError, say, set_language
 from lexcor.recognise import Mention, Variants, tag
-from lexcor.store import Store, StoreError, open_store
+from lexcor.store import PackageInfo, Store, StoreError, open_store
 
 # what a library hands over to recognise by rules of its own: text, store, packages, classes,
 # and whether a package's shorter terms inside its longer ones are wanted
@@ -68,6 +69,9 @@ def _parser(program: str) -> argparse.ArgumentParser:
         "Sprache der Begriffe einer Liste", "language of a list's terms"))
     add.add_argument("--redistributable", action="store_true", help=say(
         "die Liste darf weitergegeben werden", "the list may be passed on"))
+    add.add_argument("--supplements", default="", metavar="URL", help=say(
+        "die Liste ist eine Ergänzung: weitere Bezeichnungen zu den Kodes dieses CodeSystems",
+        "the list is a supplement: further wordings for the codes of this code system"))
     out = actions.add_parser("export", help=say(
         "ein Paket schreiben (.json oder .csv)", "write a package (.json or .csv)"))
     out.add_argument("package", help=say("URL oder Titel", "URL or title"))
@@ -104,10 +108,37 @@ def _mention(mention: Mention) -> dict[str, Any]:
                              "match": {"kind": a.kind.value}} for a in mention.assignments]}
 
 
+def fit_notes(store: Store, info: PackageInfo) -> tuple[dict[str, Any] | None, list[str]]:
+    """What to tell about a supplement taken in: what it supplements and how it fits the
+    code system in the store, as data and as sentences; nothing for any other package."""
+    fit = store.fit(info.url)
+    if fit is None:
+        return None, []
+    lines = [say(f"Ergänzt {fit.system}.", f"Supplements {fit.system}.")]
+    if fit.held is None:
+        lines.append(say(
+            "Dieses CodeSystem liegt nicht in der Ablage: Die Kodes werden ohne ihre Namen"
+            " gegeben.",
+            "The store does not hold that code system: the codes are given without their"
+            " names."))
+    if fit.held is not None and fit.wanted and fit.wanted != fit.held:
+        lines.append(say(
+            f"Die Ergänzung nennt Version {fit.wanted}, in der Ablage liegt {fit.held}.",
+            f"The supplement names version {fit.wanted}, the store holds {fit.held}."))
+    if fit.unknown:
+        lines.append(say(
+            f"{fit.unknown} Kodes der Ergänzung kennt das CodeSystem der Ablage nicht.",
+            f"{fit.unknown} codes of the supplement are unknown to the code system the store"
+            " holds."))
+    return vars(fit), lines
+
+
 def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     if args.action == "list":
         found = store.packages()
         lines = [f"{p.title or p.url}  {p.version}  {p.concepts} / {p.terms}  {p.url}"
+                 + (say(f"  (ergänzt {p.supplements})", f"  (supplements {p.supplements})")
+                    if p.supplements else "")
                  + ("" if p.redistributable else say("  (nicht weitergebbar)",
                                                      "  (not to be passed on)"))
                  for p in found]
@@ -118,14 +149,17 @@ def _packages(store: Store, args: argparse.Namespace) -> tuple[dict[str, Any], s
         return _import_fhir_package(store, args.file)
     if args.action == "import":
         read = packages.read(args.file, url=args.url, version=args.version, title=args.title,
-                             language=args.term_language, redistributable=args.redistributable) \
+                             language=args.term_language, redistributable=args.redistributable,
+                             supplements=args.supplements) \
             if args.file.suffix.lower() != ".json" else packages.read(args.file)
         info = store.add_package(read)
-        return {"package": vars(info)}, say(
+        fit, notes = fit_notes(store, info)
+        document = {"package": vars(info)} | ({} if fit is None else {"fit": fit})
+        return document, "\n".join([say(
             f"Aufgenommen: {info.title or info.url} mit {info.concepts} Begriffen in "
             f"{info.terms} Schreibweisen.",
             f"Taken in: {info.title or info.url} with {info.concepts} concepts in "
-            f"{info.terms} wordings.")
+            f"{info.terms} wordings."), *notes])
     if args.action == "export":
         chosen = store.package(store.find(args.package))
         if not chosen.redistributable and not args.own_use:
@@ -152,17 +186,27 @@ def _import_fhir_package(store: Store, file: Path) -> tuple[dict[str, Any], str]
     infos = [store.add_package(package) for package in found]
     reasons = {"not-present": say("nennt seine Begriffe nicht selbst",
                                   "does not hold its concepts"),
-               "supplement": say("ist eine Ergänzung", "is a supplement"),
+               "supplement": say("ist eine Ergänzung, die nicht sagt, was sie ergänzt",
+                                 "is a supplement that does not say what it supplements"),
                "example": say("ist nur ein Beispiel", "is an example only"),
                "empty": say("enthält keine Begriffe", "holds no concepts")}
-    lines = [say(f"Aufgenommen: {i.title or i.url} mit {i.concepts} Begriffen in {i.terms}"
-                 " Schreibweisen.",
-                 f"Taken in: {i.title or i.url} with {i.concepts} concepts in {i.terms}"
-                 " wordings.") for i in infos]
+    lines, fits = [], {}
+    for i in infos:  # every package is in before a supplement is asked how it fits
+        lines.append(say(f"Aufgenommen: {i.title or i.url} mit {i.concepts} Begriffen in"
+                         f" {i.terms} Schreibweisen.",
+                         f"Taken in: {i.title or i.url} with {i.concepts} concepts in {i.terms}"
+                         " wordings."))
+        fit, notes = fit_notes(store, i)
+        lines += notes
+        if fit is not None:
+            fits[i.url] = fit
     lines += [say(f"Ausgelassen: {url} ({reasons[reason]}).",
                   f"Left out: {url} ({reasons[reason]}).") for url, reason in skipped]
-    document = {"packages": [vars(i) for i in infos],
-                "skipped": [{"url": url, "reason": reason} for url, reason in skipped]}
+    document: dict[str, Any] = {
+        "packages": [vars(i) for i in infos],
+        "skipped": [{"url": url, "reason": reason} for url, reason in skipped]}
+    if fits:
+        document["fit"] = fits
     return document, "\n".join(lines)
 
 
@@ -178,7 +222,8 @@ def _tag(store: Store, args: argparse.Namespace, tagger: Tagger,
                          "nested": args.nested})
         document.save(args.annotation)
     lines = [f"{m.start}-{m.end}\t{m.text}\t"
-             + "; ".join(f"{a.code} {a.display} ({a.kind.value})" for a in m.assignments)
+             + "; ".join(" ".join(filter(None, (a.code, a.display, f"({a.kind.value})")))
+                         for a in m.assignments)
              for m in mentions]
     return {"mentions": [_mention(m) for m in mentions]}, "\n".join(lines)
 

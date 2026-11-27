@@ -11,6 +11,12 @@ says that the term is matched only as written.
 The namespace of these two is provisional (``NAMESPACE``): it is in one place so that it can
 be changed before a package is passed on.  A list without a URI of its own gets one from the
 store that takes it in, not from this library.
+
+A package may be a **supplement** (FHIR: ``content: supplement``): further wordings for the
+codes of another code system, which it names (``supplements``).  It has a URI, a version and
+a licence of its own and is taken in and out on its own, but its terms code in the system it
+supplements: an alphabetical index to a classification, a translation, a user's own
+synonyms.
 """
 
 from __future__ import annotations
@@ -87,6 +93,7 @@ class Package:
     language: str = ""
     redistributable: bool = False
     concepts: list[Concept] = field(default_factory=list)
+    supplements: str = ""  # the code system these are further wordings for, as FHIR names it
 
     def sha256(self) -> str:
         """A fingerprint of the content, the same for the same package whatever its file."""
@@ -103,32 +110,47 @@ def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
-def tidy_concept(concept: Concept, language: str = "") -> Concept:
+def tidy_concept(concept: Concept, language: str = "", named: bool = True) -> Concept:
     """A concept in its one form: its name is among its terms and is the preferred one, each
-    term stands once, and the terms are in a fixed order (the name first)."""
+    term stands once, and the terms are in a fixed order (the name first).  A concept of a
+    supplement (``named`` false) has its name where its code system is: nothing is made its
+    name here, and its terms stay what they are."""
     terms: dict[tuple[str, str], Term] = {}
     for term in concept.terms:
         value = _clean(term.value)
         key = (value, term.language or language)
         if value and key not in terms:
             terms[key] = Term(value, key[1], term.kind if term.kind in KINDS else "synonym")
-    display = _clean(concept.display) or (next(iter(terms))[0] if terms else concept.code)
-    named = next((key for key in terms if key[0] == display), (display, language))
-    terms.pop(named, None)
-    name = Term(display, named[1], "preferred")
-    others = sorted(terms.values(), key=lambda t: (t.kind != "preferred", t.value, t.language))
     properties = {k: concept.properties[k] for k in sorted(concept.properties)
                   if k not in RESERVED and concept.properties[k] != ""}
-    return Concept(concept.code, display, concept.cls, concept.parent, [name, *others],
+    display = _clean(concept.display)
+    if named:
+        display = display or (next(iter(terms))[0] if terms else concept.code)
+        place = next((key for key in terms if key[0] == display), (display, language))
+        terms.pop(place, None)
+        name = [Term(display, place[1], "preferred")]
+    else:
+        name = []
+    others = sorted(terms.values(), key=lambda t: (t.kind != "preferred", t.value, t.language))
+    return Concept(concept.code, display, concept.cls, concept.parent, [*name, *others],
                    properties)
 
 
 def tidy(package: Package) -> Package:
     """A package with every concept in its one form (:func:`tidy_concept`), by code."""
-    concepts = {c.code: tidy_concept(c, package.language) for c in reversed(package.concepts)}
+    concepts = {c.code: tidy_concept(c, package.language, not package.supplements)
+                for c in reversed(package.concepts)}
     return Package(package.url, package.version, package.name, package.title, package.publisher,
                    package.copyright, package.language, package.redistributable,
-                   [concepts[code] for code in sorted(concepts)])
+                   [concepts[code] for code in sorted(concepts)], _clean(package.supplements))
+
+
+def supplemented(package: Package | str) -> tuple[str, str]:
+    """The code system a supplement names, and the version of it where it names one (FHIR
+    writes both as one: ``url|version``); two empty words for a package that is none."""
+    named = package if isinstance(package, str) else package.supplements
+    url, _bar, version = named.partition("|")
+    return url, version
 
 
 # -- FHIR CodeSystem -------------------------------------------------------------------------------
@@ -137,10 +159,13 @@ def to_codesystem(package: Package) -> dict[str, Any]:
     concepts = []
     named: dict[str, str] = {}
     for concept in tidy(package).concepts:
-        entry: dict[str, Any] = {"code": concept.code, "display": concept.display}
+        entry: dict[str, Any] = {"code": concept.code}
+        if concept.display:
+            entry["display"] = concept.display
         designations = []
         for term in concept.terms:
-            if term.value == concept.display and term.language in ("", package.language):
+            if not package.supplements and term.value == concept.display \
+                    and term.language in ("", package.language):
                 continue
             designation: dict[str, Any] = {}
             if term.language:
@@ -166,8 +191,9 @@ def to_codesystem(package: Package) -> dict[str, Any]:
         "extension": [{"url": REDISTRIBUTABLE, "valueBoolean": package.redistributable}],
         "url": package.url, "version": package.version, "name": package.name,
         "title": package.title, "status": "active", "publisher": package.publisher,
-        "copyright": package.copyright, "caseSensitive": True, "content": "complete",
-        "count": len(concepts),
+        "copyright": package.copyright, "caseSensitive": True,
+        "content": "supplement" if package.supplements else "complete",
+        "supplements": package.supplements, "count": len(concepts),
         "property": [{"code": "class", "type": "string"},
                      {"code": "parent", "uri": PARENT, "type": "code"},
                      *({"code": k, "type": "string"} for k in sorted(named))],
@@ -223,20 +249,22 @@ def from_codesystem(resource: dict[str, Any]) -> Package:
         raise PackageError("no-concepts",
                            "Das CodeSystem enthält keine Begriffe (content: not-present).",
                            "The CodeSystem holds no concepts (content: not-present).")
-    if resource.get("content") == "supplement":
+    supplements = _clean(resource.get("supplements"))
+    if resource.get("content") == "supplement" and not supplements:
         raise PackageError(
             "supplement",
-            "Das CodeSystem ist eine Ergänzung (content: supplement): Es nennt Bezeichnungen zu"
-            " den Kodes eines anderen CodeSystems und ist allein kein Paket.",
-            "The CodeSystem is a supplement (content: supplement): it names wordings for the"
-            " codes of another CodeSystem and is no package on its own.")
+            "Das CodeSystem ist eine Ergänzung (content: supplement), sagt aber nicht, welches"
+            " CodeSystem es ergänzt.",
+            "The CodeSystem is a supplement (content: supplement) but does not say which"
+            " CodeSystem it supplements.")
     language = _clean(resource.get("language"))
     return tidy(Package(
         url=_clean(resource["url"]), version=_clean(resource.get("version")),
         name=_clean(resource.get("name")), title=_clean(resource.get("title")),
         publisher=_clean(resource.get("publisher")), copyright=_clean(resource.get("copyright")),
         language=language, redistributable=bool(_extension(resource, REDISTRIBUTABLE)),
-        concepts=list(_concepts(resource.get("concept", []), language))))
+        concepts=list(_concepts(resource.get("concept", []), language)),
+        supplements=supplements if resource.get("content") == "supplement" else ""))
 
 
 def read_codesystem(path: Path) -> Package:
@@ -265,13 +293,15 @@ def write_codesystem(package: Package, path: Path) -> None:
 
 # -- CSV -------------------------------------------------------------------------------------------
 def read_csv(path: Path, url: str = "", version: str = "", title: str = "",
-             language: str = "", redistributable: bool = False) -> Package:
+             language: str = "", redistributable: bool = False,
+             supplements: str = "") -> Package:
     """Read a list made by hand: one row per term with the columns ``term``, ``code``,
     ``display``, ``class``, ``kind``, ``language``, of which only ``term`` is needed.  Rows
     without a code are concepts of their own, the term being the code.  A file without the
     header line is a plain list of terms.  Any further column is a property of the concept
     (the first value a concept's rows give).  Without ``url`` the package has none until a
-    store takes it in."""
+    store takes it in.  With ``supplements`` the list is a supplement: further wordings for
+    the codes of the code system named, so every row needs its code."""
     path = Path(path)
     with path.open(encoding="utf-8-sig", newline="") as file:
         lines = [line for line in file if line.strip() and not line.startswith("#")]
@@ -286,6 +316,13 @@ def read_csv(path: Path, url: str = "", version: str = "", title: str = "",
         value = _clean(record.get("term"))
         if not value:
             continue
+        if supplements and not _clean(record.get("code")):
+            raise PackageError(
+                "no-code",
+                f"„{value}“ hat keinen Kode: In einer Ergänzung braucht jede Zeile den Kode des"
+                " ergänzten CodeSystems (Spalte „code“).",
+                f"\"{value}\" has no code: in a supplement every row needs the code of the"
+                " code system it supplements (column \"code\").")
         code = _clean(record.get("code")) or value
         concept = concepts.setdefault(code, Concept(code))
         concept.display = concept.display or _clean(record.get("display"))
@@ -299,7 +336,7 @@ def read_csv(path: Path, url: str = "", version: str = "", title: str = "",
     name = title or path.name.split(".")[0]
     return tidy(Package(url=url, version=version, name=name, title=name,
                         language=language, redistributable=redistributable,
-                        concepts=list(concepts.values())))
+                        concepts=list(concepts.values()), supplements=supplements))
 
 
 def write_csv(package: Package, path: Path) -> int:
@@ -341,8 +378,8 @@ def read_fhir_package(path: Path) -> tuple[list[Package], list[tuple[str, str]]]
     """Read the CodeSystems of a FHIR package, the form in which terminologies are published
     for download (an npm package: a ``.tgz`` with its resources as JSON files).  Returns the
     packages, by URL, and what was left out with the reason: a CodeSystem that names its
-    concepts elsewhere (``content: not-present``), a supplement, one without concepts.
-    Nothing is unpacked onto the disk."""
+    concepts elsewhere (``content: not-present``), an example, one without concepts, a
+    supplement that does not say what it supplements.  Nothing is unpacked onto the disk."""
     packages: dict[str, Package] = {}
     skipped: list[tuple[str, str]] = []
     try:
@@ -360,7 +397,9 @@ def read_fhir_package(path: Path) -> tuple[list[Package], list[tuple[str, str]]]
                 if not isinstance(resource, dict) or resource.get("resourceType") != "CodeSystem":
                     continue
                 name = str(resource.get("url") or member.name)
-                if resource.get("content") in ("not-present", "supplement", "example"):
+                if resource.get("content") in ("not-present", "example") or (
+                        resource.get("content") == "supplement"
+                        and not resource.get("supplements")):
                     skipped.append((name, str(resource["content"])))
                 elif not resource.get("concept"):
                     skipped.append((name, "empty"))

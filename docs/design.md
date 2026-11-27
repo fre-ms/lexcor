@@ -77,6 +77,25 @@ again replaces itself). That URI belongs to whoever keeps the store, not to this
 a list is named by its title. **CSV** is the second form, for lists made by hand: one row per term with the columns `term`, `code`,
 `display`, `class`, `kind`, `language`; only `term` is required. Comma-separated, UTF-8.
 
+A package may be a **supplement** (FHIR: `content: supplement`, with `supplements` naming a code system):
+further wordings for the codes of another code system, such as the alphabetical index to a classification, a
+translation, or a user's own synonyms. A supplement is a package of its own, with its URI, its version and its
+licence, and is taken in and out on its own, so that it never takes the place of the code system it adds to.
+Its terms code in the system it supplements:
+
+- recognition gives the code under that system's URI. Where the store holds the system as well and the system
+  has the code, the code comes with the version, the name and the class the system gives it; otherwise with the
+  version the supplement names, and without a name, because none is made up;
+- the system and its supplements answer as one (section 4.3): a place gets one assignment for a code, whether
+  the system's own title or a wording of the supplement matched;
+- the overlay of the system holds for the terms of its supplements;
+- a supplement is chosen by its own URI, like any package;
+- the store says how a supplement fits (`fit`): whether it holds the system, in which version beside the one
+  the supplement names, and how many of the supplement's codes the system does not have. A supplement that
+  does not fit is taken in all the same, and the command line says what does not fit.
+
+A CSV list becomes a supplement with `--supplements URL`; every row then needs its code.
+
 ### 3.2 Three kinds of package
 
 | Kind | How it gets to the user |
@@ -391,8 +410,8 @@ recogniser that is switched on has to show there what it adds and what it costs.
    bench are still to come.*
 2. **0.2** The annotation document; the two windows; the place for a library's rules.
    *Built in 0.2.0: the annotation document (`lexcor.annotation`, `lexcor tag FILE --annotation FILE`) and
-   properties of a concept in packages and in the store. Still to come: the windows and the place for a
-   library's rules.*
+   properties of a concept in packages and in the store. In 0.2.4: supplements (section 3.1). Still to come:
+   the windows and the place for a library's rules.*
 3. **0.3** The interface for recognisers that are switched on, and the first of them: retrieval by meaning as a
    source of proposals in the review window (section 4.7); the search for similar terms; UIMA CAS.
 4. **0.4** Client of a terminology server.
